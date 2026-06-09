@@ -12,14 +12,30 @@ _DEFAULT_BRAIN_TEMPERATURE = 0.7
 
 def create_llm(temperature: float = _DEFAULT_BRAIN_TEMPERATURE) -> LLM:
     """
-    Instancia o LLM via CrewAI + LiteLLM.
-    Garante que a API key está no ambiente antes de criar o client.
+    Instancia o LLM via CrewAI.
+    Provider detectado automaticamente pelo prefixo de llm_model.
+    Troque provider alterando LLM_MODEL e LLM_API_KEY no .env — sem tocar no codigo.
     """
-    # LiteLLM lê GOOGLE_API_KEY do ambiente para o provider 'gemini'
-    os.environ["GOOGLE_API_KEY"] = settings.google_api_key
+    model = settings.llm_model
+    # llm_api_key tem prioridade; fallback para google_api_key (legado)
+    api_key = settings.llm_api_key or settings.google_api_key
+
+    if model.startswith("gemini/"):
+        # CrewAI native Gemini usa GEMINI_API_KEY; LiteLLM usa GOOGLE_API_KEY
+        os.environ["GEMINI_API_KEY"] = api_key
+        os.environ["GOOGLE_API_KEY"] = api_key
+    elif model.startswith("groq/"):
+        os.environ["GROQ_API_KEY"] = api_key
+    elif model.startswith("gpt") or model.startswith("openai/"):
+        os.environ["OPENAI_API_KEY"] = api_key
+    elif model.startswith("anthropic/") or model.startswith("claude"):
+        os.environ["ANTHROPIC_API_KEY"] = api_key
+    else:
+        # Fallback: LiteLLM vai tentar resolver pelo modelo
+        os.environ["OPENAI_API_KEY"] = api_key
 
     return LLM(
-        model=settings.llm_model,   # ex: "gemini/gemini-2.5-pro"
+        model=model,
         temperature=temperature,
         max_tokens=4096,
     )

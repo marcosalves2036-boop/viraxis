@@ -25,9 +25,8 @@ dependencies = [
     "redis>=5.0.0",
 
     # AI / Agents
-    "crewai>=0.70.0",
-    "litellm>=1.40.0",              # abstração multi-provider (Gemini, Anthropic, etc.)
-    "google-generativeai>=0.7.0",   # Gemini SDK
+    "crewai[google-genai]>=0.70.0",  # google-genai: provider nativo Gemini no CrewAI
+    "litellm>=1.40.0",              # abstração multi-provider (fallback / outros providers)
     # "anthropic>=0.28.0",          # ativar quando tiver créditos
 
     # Media

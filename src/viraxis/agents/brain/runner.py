@@ -134,61 +134,84 @@ async def run_brain(
 
 async def _demo() -> None:
     """
-    Demo: cria um NicheProfile de teste e roda o BRAIN.
-    Útil para validar a integração Gemini → DB sem precisar de um escritório real.
+    Demo: cria User -> Office -> NicheProfile e roda o BRAIN.
+    Cria toda a hierarquia de FK necessária para o teste E2E.
     """
     import uuid
+    from viraxis.domain.models.user import User, UserPlan
+    from viraxis.domain.models.office import Office, OfficeStatus
     from viraxis.infrastructure.repositories.niche_profile import NicheProfileRepository
 
-    fake_office_id = uuid.uuid4()
-    fake_user_id = uuid.uuid4()
-
-    # Cria um NicheProfile demo no banco
+    # ---- 1. Criar User + Office (respeitando FK: users -> offices -> niche_profiles) ----
     async with AsyncSessionLocal() as session:
+        # User demo
+        user = User(
+            email=f"demo-{uuid.uuid4().hex[:8]}@viraxis.dev",
+            hashed_password="demo_hash_nao_usar_em_prod",
+            full_name="Demo User BRAIN",
+            plan=UserPlan.pro,
+        )
+        session.add(user)
+        await session.flush()  # gera user.id
+
+        # Office demo
+        office = Office(
+            user_id=user.id,
+            name="Escritorio Demo - Financas",
+            niche="financas-pessoais",
+            status=OfficeStatus.active,
+        )
+        session.add(office)
+        await session.flush()  # gera office.id
+
+        office_id = office.id
+        user_id = user.id
+
+        # NicheProfile demo
         niche_repo = NicheProfileRepository(session)
         await niche_repo.upsert(
-            office_id=fake_office_id,
-            user_id=fake_user_id,
-            niche_name="Finanças Pessoais para Jovens",
+            office_id=office_id,
+            user_id=user_id,
+            niche_name="Financas Pessoais para Jovens",
             target_platforms=["tiktok", "instagram"],
             viral_archetypes={
-                "revelação": 0.40,
-                "transformação": 0.30,
-                "tutorial_rápido": 0.20,
+                "revelacao": 0.40,
+                "transformacao": 0.30,
+                "tutorial_rapido": 0.20,
                 "humor_educativo": 0.10,
             },
             content_style={
                 "tom": "direto e descomplicado",
-                "duração": "30-60 segundos",
-                "gancho": "pergunta retórica ou dado chocante",
+                "duracao": "30-60 segundos",
+                "gancho": "pergunta retorica ou dado chocante",
             },
             top_keywords=[
                 "investimento para iniciantes",
-                "como sair das dívidas",
+                "como sair das dividas",
                 "renda passiva",
-                "cartão de crédito",
-                "reserva de emergência",
+                "cartao de credito",
+                "reserva de emergencia",
             ],
             brain_params={"temperature": 0.7},
-            raw_notes="Público: 18-30 anos, primeiros contatos com finanças.",
+            raw_notes="Publico: 18-30 anos, primeiros contatos com financas.",
         )
         await session.commit()
 
-    print(f"\n✅ NicheProfile demo criado | office_id={fake_office_id}\n")
+    print(f"\n[OK] Hierarquia criada: user={user_id} | office={office_id}\n")
 
-    # Roda o BRAIN
-    decision = await run_brain(fake_office_id, fake_user_id)
+    # ---- 2. Rodar o BRAIN ----
+    decision = await run_brain(office_id, user_id)
 
     print("\n" + "=" * 60)
-    print("📋 DECISÃO DO BRAIN")
+    print("DECISAO DO BRAIN")
     print("=" * 60)
     print(f"Tipo      : {decision.decision_type.value}")
     print(f"Status    : {decision.status.value}")
-    print(f"Confiança : {decision.confidence_score:.0%}")
-    print(f"Tópico    : {decision.selected_topic}")
+    print(f"Confianca : {decision.confidence_score:.0%}")
+    print(f"Topico    : {decision.selected_topic}")
     print(f"Archetype : {decision.selected_archetype}")
     print(f"Plataforma: {decision.selected_platform}")
-    print(f"\nHIPÓTESE:\n{decision.hypothesis}")
+    print(f"\nHIPOTESE:\n{decision.hypothesis}")
     print(f"\nREASONING:\n{decision.reasoning}")
     print("=" * 60)
 

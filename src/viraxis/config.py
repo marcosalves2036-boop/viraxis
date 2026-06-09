@@ -64,11 +64,17 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------ #
     # LLM providers                                                       #
     # ------------------------------------------------------------------ #
-    google_api_key: str = Field(default="", alias="GOOGLE_API_KEY")
-    llm_provider: str = "gemini"
-    llm_model: str = "gemini/gemini-2.5-pro"
+    # Chave generica — usada por qualquer provider configurado em llm_model.
+    # Exemplos:
+    #   Groq:     LLM_API_KEY=gsk_...   LLM_MODEL=groq/llama-3.3-70b-versatile
+    #   Gemini:   LLM_API_KEY=AIzaSy... LLM_MODEL=gemini/gemini-2.5-pro
+    #   OpenAI:   LLM_API_KEY=sk-...    LLM_MODEL=gpt-4o
+    #   Anthropic:LLM_API_KEY=sk-ant-...LLM_MODEL=anthropic/claude-3-5-sonnet
+    llm_api_key: str = Field(default="", alias="LLM_API_KEY")
+    llm_model: str = "groq/llama-3.3-70b-versatile"
 
-    # Anthropic (ativar depois)
+    # Campos legados — mantidos para compatibilidade retroativa
+    google_api_key: str = Field(default="", alias="GOOGLE_API_KEY")
     anthropic_api_key: str = ""
 
     # ------------------------------------------------------------------ #

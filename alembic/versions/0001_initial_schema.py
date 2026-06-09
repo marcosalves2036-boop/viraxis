@@ -25,47 +25,7 @@ depends_on: str | None = None
 
 
 def upgrade() -> None:
-    # ------------------------------------------------------------------ #
-    # ENUMs — criados antes das tabelas                                   #
-    # ------------------------------------------------------------------ #
-    userplan_enum = postgresql.ENUM(
-        "free", "pro", "business", name="userplan", create_type=True
-    )
-    officestatus_enum = postgresql.ENUM(
-        "active", "paused", "archived", name="officestatus", create_type=True
-    )
-    decisiontype_enum = postgresql.ENUM(
-        "content_topic", "archetype_selection", "platform_targeting",
-        "repost_strategy", "pause_office",
-        name="decisiontype", create_type=True,
-    )
-    decisionstatus_enum = postgresql.ENUM(
-        "pending", "approved", "executing", "done", "rejected", "failed",
-        name="decisionstatus", create_type=True,
-    )
-    contentstatus_enum = postgresql.ENUM(
-        "draft", "rendering", "ready", "published", "failed",
-        name="contentstatus", create_type=True,
-    )
-    trendsource_enum = postgresql.ENUM(
-        "scout_url", "vault_upload", "manual_input",
-        name="trendsource", create_type=True,
-    )
-    socialplatform_enum = postgresql.ENUM(
-        "tiktok", "instagram", "youtube", "kwai",
-        name="socialplatform", create_type=True,
-    )
-    agentrunstatus_enum = postgresql.ENUM(
-        "queued", "running", "success", "failed", "retrying", "cancelled",
-        name="agentrunstatus", create_type=True,
-    )
-
-    for enum_type in [
-        userplan_enum, officestatus_enum, decisiontype_enum, decisionstatus_enum,
-        contentstatus_enum, trendsource_enum, socialplatform_enum, agentrunstatus_enum,
-    ]:
-        enum_type.create(op.get_bind(), checkfirst=True)
-
+    # ENUMs são criados automaticamente pelo SQLAlchemy ao criar as tabelas
     # ------------------------------------------------------------------ #
     # TABLE: users                                                        #
     # ------------------------------------------------------------------ #

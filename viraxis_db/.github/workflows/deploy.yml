@@ -1,0 +1,35 @@
+name: CI / Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── Validação de sintaxe Python ───────────────────────────────────────────────
+  lint:
+    name: Checar sintaxe Python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Instalar dependências mínimas
+        run: |
+          cd viraxis_db
+          pip install -e . --quiet
+      - name: Checar sintaxe de todos os arquivos .py
+        run: |
+          find viraxis_db/src -name "*.py" | \
+          xargs python -c "
+          import ast, sys
+          erros = []
+          for f in sys.argv[1:]:
+              try:
+                  ast.parse(open(f).read())
+              except SyntaxError as e:
+                  erros.append(f'{f}:{e.lineno}: {e.msg}')
+          if erros:
+              print('\n'.join(

@@ -1,0 +1,43 @@
+name: Deploy to VM
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy para Oracle Cloud VM
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          script: |
+            set -e
+            cd /opt/viraxis
+
+            echo "==> Pull do repositorio..."
+            git pull origin main
+
+            echo "==> Build das imagens..."
+            docker compose build --no-cache
+
+            echo "==> Restart dos servicos..."
+            docker compose up -d --force-recreate
+
+            echo "==> Aguardando API..."
+            sleep 10
+            docker compose ps
+
+            echo "==> Health check..."
+            curl -sf http://localhost:8000/health || (docker compose logs api && exit 1)
+
+            echo "==> Deploy concluido!"

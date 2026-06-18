@@ -1,6 +1,7 @@
 version: "3.9"
 
 services:
+  # ── Infraestrutura ────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
     container_name: viraxis_postgres
@@ -17,7 +18,7 @@ services:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-viraxis}"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
 
   redis:
     image: redis:7-alpine
@@ -32,6 +33,55 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+
+  # ── Aplicação ─────────────────────────────────────────────────────
+  api:
+    build: .
+    container_name: viraxis_api
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn viraxis.api.main:app --host 0.0.0.0 --port 8000 --reload"
+    volumes:
+      - ./src:/app/src
+      - ./alembic:/app/alembic
+
+  worker:
+    build: .
+    container_name: viraxis_worker
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      celery -A viraxis.worker.celery_app worker
+      --loglevel=info -Q viraxis -c 2
+    volumes:
+      - ./src:/app/src
+
+  beat:
+    build: .
+    container_name: viraxis_beat
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - redis
+    command: >
+      celery -A viraxis.worker.celery_app beat
+      --loglevel=info
+    volumes:
+      - ./src:/app/src
 
 volumes:
   postgres_data:

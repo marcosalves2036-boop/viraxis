@@ -10,6 +10,7 @@ Fluxo:
 
 import asyncio
 import logging
+import traceback
 from uuid import UUID
 
 from crewai import Crew, Process
@@ -19,6 +20,7 @@ from viraxis.agents.brain.schemas import BrainDecisionInput, BrainDecisionOutput
 from viraxis.agents.brain.tasks import create_decision_task
 from viraxis.domain.models.content_decision import ContentDecision, DecisionType
 from viraxis.infrastructure.database.session import AsyncSessionLocal
+from viraxis.infrastructure.repositories.agent_run_log import AgentRunLogRepository
 from viraxis.infrastructure.repositories.content_decision import ContentDecisionRepository
 from viraxis.infrastructure.repositories.niche_profile import NicheProfileRepository
 
@@ -95,10 +97,29 @@ async def run_brain(
             resolved_temperature,
         )
 
-        # ---- 2. Executar CrewAI (sync → thread) ----
-        decision_output: BrainDecisionOutput = await asyncio.to_thread(
-            _run_crew_sync, niche_input, resolved_temperature
+        # ---- 2. Criar AgentRunLog com status=running ----
+        log_repo = AgentRunLogRepository(session)
+        run_log = await log_repo.create_running(
+            agent_name="BrainAgent",
+            task_name="create_decision_task",
+            office_id=office_id,
+            user_id=user_id,
+            input_data=niche_input.model_dump(),
         )
+        await session.flush()
+
+        # ---- 3. Executar CrewAI (sync → thread) ----
+        decision_output: BrainDecisionOutput | None = None
+        try:
+            decision_output = await asyncio.to_thread(
+                _run_crew_sync, niche_input, resolved_temperature
+            )
+        except Exception as exc:
+            tb = traceback.format_exc()
+            await log_repo.mark_failed(run_log, error_message=str(exc), traceback=tb)
+            await session.commit()
+            logger.error("BRAIN falhou | office=%s | erro=%s", office_id, exc)
+            raise
 
         logger.info(
             "BRAIN concluiu | tipo=%s | confiança=%.2f | hipótese=%.80s...",
@@ -107,7 +128,7 @@ async def run_brain(
             decision_output.hypothesis,
         )
 
-        # ---- 3. Persistir ContentDecision ----
+        # ---- 4. Persistir ContentDecision ----
         cd_repo = ContentDecisionRepository(session)
         decision = await cd_repo.create_decision(
             office_id=office_id,
@@ -122,9 +143,19 @@ async def run_brain(
             confidence_score=decision_output.confidence_score,
         )
 
+        # ---- 5. Atualizar log para success ----
+        await log_repo.mark_success(
+            run_log,
+            output_data={
+                "decision_id": str(decision.id),
+                "decision_type": decision_output.decision_type,
+                "confidence_score": decision_output.confidence_score,
+            },
+        )
+
         await session.commit()
 
-        logger.info("ContentDecision salvo | id=%s", decision.id)
+        logger.info("ContentDecision salvo | id=%s | log=%s", decision.id, run_log.id)
         return decision
 
 

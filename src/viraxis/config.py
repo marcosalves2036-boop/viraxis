@@ -84,6 +84,15 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 10080  # 7 dias
 
+
+    # ------------------------------------------------------------------ #
+    # Stripe Billing                                                      #
+    # ------------------------------------------------------------------ #
+    stripe_secret_key: str = Field(default="", alias="STRIPE_SECRET_KEY")
+    stripe_webhook_secret: str = Field(default="", alias="STRIPE_WEBHOOK_SECRET")
+    # Price IDs do Stripe Dashboard
+    stripe_price_pro: str = Field(default="", alias="STRIPE_PRICE_PRO")
+    stripe_price_business: str = Field(default="", alias="STRIPE_PRICE_BUSINESS")
     # ------------------------------------------------------------------ #
     # Cloudflare R2                                                       #
     # ------------------------------------------------------------------ #

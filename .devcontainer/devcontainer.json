@@ -1,0 +1,66 @@
+{
+  "name": "VIRAXIS Dev",
+
+  // Usa a imagem universal do GitHub com Python 3.11 + Docker-in-Docker
+  "image": "mcr.microsoft.com/devcontainers/python:3.11",
+
+  "features": {
+    // Docker dentro do Codespace — necessario para docker-compose up
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "version": "latest",
+      "dockerDashComposeVersion": "v2"
+    },
+    // Git extras (git-lfs, etc.)
+    "ghcr.io/devcontainers/features/git:1": {}
+  },
+
+  // ── VS Code Extensions ──────────────────────────────────────────────────────
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-python.black-formatter",
+        "ms-python.flake8",
+        "charliermarsh.ruff",
+        "bradlc.vscode-tailwindcss",
+        "ms-azuretools.vscode-docker",
+        "ckolkman.vscode-postgres",
+        "redhat.vscode-yaml",
+        "tamasfe.even-better-toml",
+        "EditorTeam.gitmoment",
+        "eamodio.gitlens",
+        "humao.rest-client",
+        "ms-vscode.live-server"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "charliermarsh.ruff",
+        "[python]": {
+          "editor.defaultFormatter": "charliermarsh.ruff"
+        },
+        "python.analysis.typeCheckingMode": "basic",
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    }
+  },
+
+  // ── Portas expostas ─────────────────────────────────────────────────────────
+  "forwardPorts": [8000, 5432, 6379, 5555],
+  "portsAttributes": {
+    "8000": { "label": "API FastAPI", "onAutoForward": "notify" },
+    "5432": { "label": "PostgreSQL", "onAutoForward": "silent" },
+    "6379": { "label": "Redis", "onAutoForward": "silent" },
+    "5555": { "label": "Flower (Celery monitor)", "onAutoForward": "silent" }
+  },
+
+  // ── Scripts de setup ────────────────────────────────────────────────────────
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+
+  // Monta o workspace como repositorio git
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+
+  // Roda como usuario nao-root
+  "remoteUser": "vscode"
+}

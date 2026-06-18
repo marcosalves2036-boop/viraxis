@@ -1,0 +1,521 @@
+"""Router de Offices — escritórios + BRAIN + decisões + SCOUT trends."""
+
+import asyncio
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, field_validator
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+
+from viraxis.api.deps import get_current_user, get_session
+from viraxis.domain.models.content_decision import ContentDecision, DecisionStatus
+from viraxis.domain.models.niche_profile import NicheProfile
+from viraxis.domain.models.office import Office, OfficeStatus
+from viraxis.domain.models.user import User
+from viraxis.infrastructure.repositories.content_decision import ContentDecisionRepository
+
+router = APIRouter(prefix="/offices", tags=["offices"])
+
+
+# ── Schemas ────────────────────────────────────────────────────────────────────
+
+class OfficeCreate(BaseModel):
+    name: str
+    niche: str
+    platforms: list[str] = []
+    target_audience: str = ""
+    content_style: str = "educational"
+
+    @field_validator("name")
+    @classmethod
+    def name_not_empty(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Nome não pode ser vazio")
+        return v
+
+    @field_validator("niche")
+    @classmethod
+    def niche_not_empty(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Nicho não pode ser vazio")
+        return v
+
+
+class OfficeResponse(BaseModel):
+    id: str
+    name: str
+    niche: str
+    status: str
+    platforms: list[str]
+    target_audience: str
+    content_style: str
+    content_count: int = 0
+    published_count: int = 0
+    viral_count: int = 0
+    pending_decisions: int = 0
+
+
+class DecisionResponse(BaseModel):
+    id: str
+    decision_type: str
+    status: str
+    # Conteúdo selecionado
+    content_topic: str
+    content_format: str
+    target_platform: str
+    selected_archetype: str
+    confidence_score: float
+    # Raciocínio auditável
+    hypothesis: str
+    reasoning: dict
+    input_signals: dict
+    # Timestamps
+    created_at: str
+    updated_at: str
+
+
+class DecisionStatusUpdate(BaseModel):
+    status: str
+
+    @field_validator("status")
+    @classmethod
+    def valid_status(cls, v: str) -> str:
+        allowed = {s.value for s in DecisionStatus}
+        if v not in allowed:
+            raise ValueError(f"Status inválido. Permitidos: {allowed}")
+        return v
+
+
+class BrainRunResponse(BaseModel):
+    id: str
+    content_topic: str
+    target_platform: str
+    confidence_score: float
+    hypothesis: str
+
+
+class OfficeStatusUpdate(BaseModel):
+    status: str
+
+    @field_validator("status")
+    @classmethod
+    def valid_status(cls, v: str) -> str:
+        allowed = {s.value for s in OfficeStatus}
+        if v not in allowed:
+            raise ValueError(f"Status inválido. Permitidos: {allowed}")
+        return v
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _office_to_response(
+    office: Office,
+    profile: NicheProfile | None,
+    pending: int = 0,
+) -> OfficeResponse:
+    return OfficeResponse(
+        id=str(office.id),
+        name=office.name,
+        niche=office.niche,
+        status=office.status.value,
+        platforms=profile.target_platforms if profile else [],
+        target_audience=profile.raw_notes or "" if profile else "",
+        content_style=(
+            profile.content_style.get("style", "educational") if profile else "educational"
+        ),
+        pending_decisions=pending,
+    )
+
+
+def _decision_to_response(d: ContentDecision) -> DecisionResponse:
+    return DecisionResponse(
+        id=str(d.id),
+        decision_type=d.decision_type.value,
+        status=d.status.value,
+        content_topic=d.selected_topic or "",
+        content_format=d.decision_type.value,
+        target_platform=d.selected_platform or "",
+        selected_archetype=d.selected_archetype or "",
+        confidence_score=d.confidence_score or 0.0,
+        hypothesis=d.hypothesis,
+        reasoning=d.reasoning or {},
+        input_signals=d.input_signals or {},
+        created_at=d.created_at.isoformat() if d.created_at else "",
+        updated_at=d.updated_at.isoformat() if d.updated_at else "",
+    )
+
+
+async def _get_office_or_404(
+    office_id: UUID, user_id: UUID, session: AsyncSession
+) -> Office:
+    result = await session.execute(
+        select(Office).where(Office.id == office_id, Office.user_id == user_id)
+    )
+    office = result.scalar_one_or_none()
+    if not office:
+        raise HTTPException(status_code=404, detail="Escritório não encontrado")
+    return office
+
+
+# ── Endpoints: Offices ─────────────────────────────────────────────────────────
+
+@router.get("", response_model=list[OfficeResponse])
+async def list_offices(
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    offices_result = await session.execute(
+        select(Office).where(Office.user_id == current_user.id)
+    )
+    offices = offices_result.scalars().all()
+
+    responses = []
+    for o in offices:
+        profile_result = await session.execute(
+            select(NicheProfile).where(NicheProfile.office_id == o.id)
+        )
+        profile = profile_result.scalar_one_or_none()
+
+        # Contar decisões pendentes
+        pending_result = await session.execute(
+            select(ContentDecision).where(
+                ContentDecision.office_id == o.id,
+                ContentDecision.status == DecisionStatus.pending,
+            )
+        )
+        pending = len(pending_result.scalars().all())
+
+        responses.append(_office_to_response(o, profile, pending))
+
+    return responses
+
+
+@router.post("", response_model=OfficeResponse, status_code=status.HTTP_201_CREATED)
+async def create_office(
+    body: OfficeCreate,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    office = Office(
+        user_id=current_user.id,
+        name=body.name,
+        niche=body.niche,
+        status=OfficeStatus.active,
+    )
+    session.add(office)
+    await session.flush()
+
+    from viraxis.infrastructure.repositories.niche_profile import NicheProfileRepository
+    niche_repo = NicheProfileRepository(session)
+    profile = await niche_repo.upsert(
+        office_id=office.id,
+        user_id=current_user.id,
+        niche_name=body.niche,
+        target_platforms=body.platforms,
+        content_style={"style": body.content_style},
+        viral_archetypes={},
+        top_keywords=[],
+        brain_params={},
+        raw_notes=body.target_audience or None,
+    )
+    session.add(profile)
+    await session.commit()
+    await session.refresh(office)
+
+    return _office_to_response(office, profile)
+
+
+@router.patch("/{office_id}", response_model=OfficeResponse)
+async def update_office(
+    office_id: UUID,
+    body: OfficeCreate,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    office = await _get_office_or_404(office_id, current_user.id, session)
+
+    office.name = body.name
+    office.niche = body.niche
+
+    profile_result = await session.execute(
+        select(NicheProfile).where(NicheProfile.office_id == office_id)
+    )
+    profile = profile_result.scalar_one_or_none()
+    if profile:
+        profile.niche_name = body.niche
+        profile.target_platforms = body.platforms
+        profile.content_style = {"style": body.content_style}
+        profile.raw_notes = body.target_audience or None
+
+    session.add(office)
+    await session.commit()
+    await session.refresh(office)
+    return _office_to_response(office, profile)
+
+
+@router.patch("/{office_id}/status", response_model=OfficeResponse)
+async def update_office_status(
+    office_id: UUID,
+    body: OfficeStatusUpdate,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Pausar ou ativar um escritório."""
+    office = await _get_office_or_404(office_id, current_user.id, session)
+    office.status = OfficeStatus(body.status)
+    session.add(office)
+    await session.commit()
+    await session.refresh(office)
+
+    profile_result = await session.execute(
+        select(NicheProfile).where(NicheProfile.office_id == office_id)
+    )
+    profile = profile_result.scalar_one_or_none()
+    return _office_to_response(office, profile)
+
+
+@router.delete("/{office_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_office(
+    office_id: UUID,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    office = await _get_office_or_404(office_id, current_user.id, session)
+    await session.delete(office)
+    await session.commit()
+
+
+# ── Endpoints: BRAIN ───────────────────────────────────────────────────────────
+
+@router.post("/{office_id}/brain/run", response_model=BrainRunResponse)
+async def run_brain_for_office(
+    office_id: UUID,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Executa o agente BRAIN para um escritório e retorna a decisão gerada."""
+    await _get_office_or_404(office_id, current_user.id, session)
+
+    try:
+        from viraxis.agents.brain.runner import run_brain
+        decision = await run_brain(office_id, current_user.id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao executar BRAIN: {e}")
+
+    return BrainRunResponse(
+        id=str(decision.id),
+        content_topic=decision.selected_topic or "",
+        target_platform=decision.selected_platform or "",
+        confidence_score=decision.confidence_score or 0.0,
+        hypothesis=decision.hypothesis,
+    )
+
+
+# ── Endpoints: SCOUT Trends ────────────────────────────────────────────────────
+
+class TrendAnalyzeRequest(BaseModel):
+    url: str
+
+    @classmethod
+    def __get_validators__(cls):
+        yield cls.validate
+
+    @classmethod
+    def validate(cls, v):
+        return cls(url=v) if isinstance(v, dict) else v
+
+    def model_post_init(self, __context) -> None:
+        if not self.url.startswith("http"):
+            raise ValueError("URL inválida — deve começar com http(s)://")
+
+
+class TrendAnalyzeResponse(BaseModel):
+    snapshot_id: str
+    platform: str
+    archetype: str | None
+    engagement_estimate: str
+    keywords: list[str]
+    message: str
+
+
+@router.post("/{office_id}/trends/analyze", response_model=TrendAnalyzeResponse)
+async def analyze_trend(
+    office_id: UUID,
+    body: TrendAnalyzeRequest,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Analisa um vídeo viral via SCOUT e cria um TrendSnapshot.
+
+    Sprint 1: execução síncrona.
+    Sprint 3: migra para Celery com retorno {task_id, status: 'queued'}.
+    """
+    await _get_office_or_404(office_id, current_user.id, session)
+
+    try:
+        from viraxis.agents.scout.runner import run_scout
+        from viraxis.infrastructure.ytdlp_client import (
+            DownloadTimeoutError,
+            UnsupportedPlatformError,
+            VideoUnavailableError,
+            YtdlpError,
+        )
+        snapshot = await run_scout(office_id, current_user.id, body.url)
+    except UnsupportedPlatformError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except VideoUnavailableError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except DownloadTimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail="A análise demorou mais que o esperado. Tente novamente.",
+        )
+    except YtdlpError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao analisar tendência: {e}")
+
+    signals = snapshot.processed_signals or {}
+    return TrendAnalyzeResponse(
+        snapshot_id=str(snapshot.id),
+        platform=signals.get("platform_detected", "unknown"),
+        archetype=signals.get("archetype"),
+        engagement_estimate=signals.get("engagement_estimate", "medium"),
+        keywords=signals.get("keywords", [])[:5],
+        message="Tendência capturada com sucesso. O BRAIN vai usá-la na próxima análise.",
+    )
+
+
+# ── Endpoints: Decisions ───────────────────────────────────────────────────────
+
+@router.get("/{office_id}/decisions", response_model=list[DecisionResponse])
+
+async def list_decisions(
+    office_id: UUID,
+    status_filter: str | None = Query(None, alias="status"),
+    limit: int = Query(50, ge=1, le=200),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Lista as ContentDecisions do BRAIN para um escritório, com filtro opcional por status."""
+    await _get_office_or_404(office_id, current_user.id, session)
+
+    query = select(ContentDecision).where(ContentDecision.office_id == office_id)
+    if status_filter:
+        try:
+            query = query.where(ContentDecision.status == DecisionStatus(status_filter))
+        except ValueError:
+            raise HTTPException(status_code=422, detail=f"Status inválido: {status_filter}")
+    query = query.order_by(ContentDecision.created_at.desc()).limit(limit)
+
+    result = await session.execute(query)
+    decisions = result.scalars().all()
+    return [_decision_to_response(d) for d in decisions]
+
+
+@router.get("/{office_id}/decisions/{decision_id}", response_model=DecisionResponse)
+async def get_decision(
+    office_id: UUID,
+    decision_id: UUID,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Retorna uma decisão completa pelo ID."""
+    await _get_office_or_404(office_id, current_user.id, session)
+
+    result = await session.execute(
+        select(ContentDecision).where(
+            ContentDecision.id == decision_id,
+            ContentDecision.office_id == office_id,
+        )
+    )
+    decision = result.scalar_one_or_none()
+    if not decision:
+        raise HTTPException(status_code=404, detail="Decisão não encontrada")
+    return _decision_to_response(decision)
+
+
+@router.patch("/{office_id}/decisions/{decision_id}/status", response_model=DecisionResponse)
+async def update_decision_status(
+    office_id: UUID,
+    decision_id: UUID,
+    body: DecisionStatusUpdate,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Aprova, rejeita ou avança o status de uma decisão do BRAIN."""
+    await _get_office_or_404(office_id, current_user.id, session)
+
+    result = await session.execute(
+        select(ContentDecision).where(
+            ContentDecision.id == decision_id,
+            ContentDecision.office_id == office_id,
+        )
+    )
+    decision = result.scalar_one_or_none()
+    if not decision:
+        raise HTTPException(status_code=404, detail="Decisão não encontrada")
+
+    decision.status = DecisionStatus(body.status)
+    session.add(decision)
+    await session.commit()
+    await session.refresh(decision)
+    return _decision_to_response(decision)
+
+
+# ── Endpoints: RENDERER ────────────────────────────────────────────────────────
+
+class RenderResponse(BaseModel):
+    content_item_id: str
+    title: str
+    duration_seconds: float | None
+    status: str
+    message: str
+
+
+@router.post(
+    "/{office_id}/decisions/{decision_id}/render",
+    response_model=RenderResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def render_decision(
+    office_id: UUID,
+    decision_id: UUID,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Executa o agente RENDERER para gerar roteiro a partir de uma decisão do BRAIN.
+
+    Cria um ContentItem com script completo (status=draft) e avança a decisão
+    para status=executing.
+
+    Sprint 1: execução síncrona.
+    Sprint 3: migra para Celery com retorno {task_id, status: 'queued'}.
+    """
+    await _get_office_or_404(office_id, current_user.id, session)
+
+    try:
+        from viraxis.agents.renderer.runner import run_renderer
+        content_item = await run_renderer(
+            office_id, current_user.id, decision_id
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao renderizar roteiro: {e}")
+
+    return RenderResponse(
+        content_item_id=str(content_item.id),
+        title=content_item.title,
+        duration_seconds=content_item.duration_seconds,
+        status=content_item.status.value,
+        message="Roteiro gerado com sucesso. ContentItem criado com status=draft.",
+    )
+

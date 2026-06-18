@@ -17,11 +17,16 @@ class UserPlan(str, enum.Enum):
     business = "business"
 
 
+class UserRole(str, enum.Enum):
+    admin = "admin"
+    user = "user"
+
+
 class User(BaseModelMixin, Base):
     __tablename__ = "users"
     __table_args__ = (
         UniqueConstraint("email", name="uq_users_email"),
-        {"comment": "Contas de usuário — raiz da hierarquia multi-tenant."},
+        {"comment": "Contas de usuario — raiz da hierarquia multi-tenant."},
     )
 
     email: Mapped[str] = mapped_column(String(320), nullable=False, index=True)
@@ -36,8 +41,14 @@ class User(BaseModelMixin, Base):
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default="true"
     )
+    role: Mapped[UserRole] = mapped_column(
+        Enum(UserRole, name="userrole", create_constraint=True),
+        nullable=False,
+        default=UserRole.user,
+        server_default=UserRole.user.value,
+    )
 
-    # Relationships (lazy="raise" força joins explícitos — sem N+1 silencioso)
+    # Relationships
     offices: Mapped[list["Office"]] = relationship(  # type: ignore[name-defined]  # noqa: F821
         "Office", back_populates="user", lazy="raise"
     )

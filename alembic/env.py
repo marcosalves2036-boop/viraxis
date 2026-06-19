@@ -13,6 +13,17 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
+# ── Ler DATABASE_URL do ambiente (Render/produção) ────────────────────────────
+# Alembic usa driver síncrono (psycopg2); converte asyncpg → psycopg2 se necessário
+_db_url = os.environ.get("DATABASE_URL")
+if _db_url:
+    _db_url = (
+        _db_url
+        .replace("postgresql+asyncpg://", "postgresql+psycopg2://")
+        .replace("postgres://", "postgresql+psycopg2://")
+    )
+    config.set_main_option("sqlalchemy.url", _db_url)
+
 target_metadata = Base.metadata
 
 

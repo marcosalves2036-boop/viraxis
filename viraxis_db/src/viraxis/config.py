@@ -1,6 +1,7 @@
 """Configurações centrais da aplicação via pydantic-settings + .env."""
 
 from functools import lru_cache
+from typing import Optional
 
 from pydantic import Field, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -26,6 +27,10 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------ #
     # Banco de dados                                                      #
     # ------------------------------------------------------------------ #
+    # Opção A — URL completa (Render, Heroku, Supabase): tem prioridade
+    database_url: Optional[str] = Field(default=None, alias="DATABASE_URL")
+
+    # Opção B — vars individuais (Docker local / Codespaces)
     postgres_user: str = "viraxis"
     postgres_password: str = "viraxis_dev"
     postgres_db: str = "viraxis"
@@ -35,23 +40,31 @@ class Settings(BaseSettings):
     @computed_field  # type: ignore[misc]
     @property
     def database_url_async(self) -> str:
-        """URL para o driver asyncpg (SQLAlchemy async)."""
-        u = self.postgres_user
-        p = self.postgres_password
-        h = self.postgres_host
-        port = self.postgres_port
-        db = self.postgres_db
+        """URL asyncpg para SQLAlchemy async."""
+        if self.database_url:
+            url = self.database_url
+            url = url.replace("postgres://", "postgresql://")
+            url = url.replace("postgresql+psycopg2://", "postgresql+asyncpg://")
+            if not url.startswith("postgresql+asyncpg://"):
+                url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+            return url
+        u, p = self.postgres_user, self.postgres_password
+        h, port, db = self.postgres_host, self.postgres_port, self.postgres_db
         return f"postgresql+asyncpg://{u}:{p}@{h}:{port}/{db}"
 
     @computed_field  # type: ignore[misc]
     @property
     def database_url_sync(self) -> str:
-        """URL para o driver psycopg2 (Alembic CLI)."""
-        u = self.postgres_user
-        p = self.postgres_password
-        h = self.postgres_host
-        port = self.postgres_port
-        db = self.postgres_db
+        """URL psycopg2 para Alembic CLI."""
+        if self.database_url:
+            url = self.database_url
+            url = url.replace("postgres://", "postgresql://")
+            url = url.replace("postgresql+asyncpg://", "postgresql+psycopg2://")
+            if not url.startswith("postgresql+psycopg2://"):
+                url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
+            return url
+        u, p = self.postgres_user, self.postgres_password
+        h, port, db = self.postgres_host, self.postgres_port, self.postgres_db
         return f"postgresql+psycopg2://{u}:{p}@{h}:{port}/{db}"
 
     # ------------------------------------------------------------------ #
@@ -64,16 +77,13 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------ #
     # LLM providers                                                       #
     # ------------------------------------------------------------------ #
-    # Chave generica — usada por qualquer provider configurado em llm_model.
-    # Exemplos:
-    #   Groq:     LLM_API_KEY=gsk_...   LLM_MODEL=groq/llama-3.3-70b-versatile
-    #   Gemini:   LLM_API_KEY=AIzaSy... LLM_MODEL=gemini/gemini-2.5-pro
-    #   OpenAI:   LLM_API_KEY=sk-...    LLM_MODEL=gpt-4o
-    #   Anthropic:LLM_API_KEY=sk-ant-...LLM_MODEL=anthropic/claude-3-5-sonnet
     llm_api_key: str = Field(default="", alias="LLM_API_KEY")
     llm_model: str = "groq/llama-3.3-70b-versatile"
+    scout_llm_model: str = Field(default="groq/llama-3.3-70b-versatile", alias="SCOUT_LLM_MODEL")
+    renderer_llm_model: str = Field(default="groq/llama-3.3-70b-versatile", alias="RENDERER_LLM_MODEL")
+    scout_enable_transcription: bool = Field(default=False, alias="SCOUT_ENABLE_TRANSCRIPTION")
 
-    # Campos legados — mantidos para compatibilidade retroativa
+    # Campos legados
     google_api_key: str = Field(default="", alias="GOOGLE_API_KEY")
     anthropic_api_key: str = ""
 
@@ -84,15 +94,14 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 10080  # 7 dias
 
-
     # ------------------------------------------------------------------ #
     # Stripe Billing                                                      #
     # ------------------------------------------------------------------ #
     stripe_secret_key: str = Field(default="", alias="STRIPE_SECRET_KEY")
     stripe_webhook_secret: str = Field(default="", alias="STRIPE_WEBHOOK_SECRET")
-    # Price IDs do Stripe Dashboard
     stripe_price_pro: str = Field(default="", alias="STRIPE_PRICE_PRO")
     stripe_price_business: str = Field(default="", alias="STRIPE_PRICE_BUSINESS")
+
     # ------------------------------------------------------------------ #
     # Cloudflare R2                                                       #
     # ------------------------------------------------------------------ #
@@ -108,5 +117,4 @@ def get_settings() -> Settings:
     return Settings()
 
 
-# Atalho conveniente para import direto
 settings = get_settings()

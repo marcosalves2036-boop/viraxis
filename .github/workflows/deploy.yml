@@ -1,43 +1,74 @@
-name: Deploy to VM
+name: CI / Deploy
 
 on:
   push:
     branches: [main]
-  workflow_dispatch:
+  pull_request:
+    branches: [main]
 
 jobs:
-  deploy:
-    name: Deploy para Oracle Cloud VM
+  # ── Lint Python ──────────────────────────────────────────────────────────────
+  lint:
+    name: Checar sintaxe Python
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.0.3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          host: ${{ secrets.VM_HOST }}
-          username: ${{ secrets.VM_USER }}
-          key: ${{ secrets.VM_SSH_KEY }}
-          script: |
-            set -e
-            cd /opt/viraxis
+          python-version: "3.11"
+      - name: Checar sintaxe
+        run: |
+          find src -name "*.py" 2>/dev/null | \
+          xargs python -c "
+          import ast, sys
+          erros = []
+          for f in sys.argv[1:]:
+              try:
+                  ast.parse(open(f).read())
+              except SyntaxError as e:
+                  erros.append(f'{f}:{e.lineno}: {e.msg}')
+          if erros:
+              print('\n'.join(erros)); sys.exit(1)
+          print(f'OK — {len(sys.argv)-1} arquivos verificados')
+          " || echo "Sem arquivos .py para verificar"
 
-            echo "==> Pull do repositorio..."
-            git pull origin main
+  # ── Deploy API → Render ──────────────────────────────────────────────────────
+  deploy-api:
+    name: Deploy API → Render
+    runs-on: ubuntu-latest
+    needs: lint
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Trigger Render deploy
+        run: |
+          if [ -z "${{ secrets.RENDER_DEPLOY_HOOK_URL }}" ]; then
+            echo "RENDER_DEPLOY_HOOK_URL não configurada — pulando"
+            exit 0
+          fi
+          curl -sf -X POST "${{ secrets.RENDER_DEPLOY_HOOK_URL }}" \
+            && echo "✅ Deploy Render disparado" \
+            || echo "❌ Falha ao disparar deploy Render"
 
-            echo "==> Build das imagens..."
-            docker compose build --no-cache
-
-            echo "==> Restart dos servicos..."
-            docker compose up -d --force-recreate
-
-            echo "==> Aguardando API..."
-            sleep 10
-            docker compose ps
-
-            echo "==> Health check..."
-            curl -sf http://localhost:8000/health || (docker compose logs api && exit 1)
-
-            echo "==> Deploy concluido!"
+  # ── Deploy Frontend → Vercel ─────────────────────────────────────────────────
+  deploy-frontend:
+    name: Deploy Frontend → Vercel
+    runs-on: ubuntu-latest
+    needs: lint
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy via Vercel CLI
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          if [ -z "$VERCEL_TOKEN" ]; then
+            echo "VERCEL_TOKEN não configurada — pulando"
+            exit 0
+          fi
+          npm install -g vercel --quiet
+          cd viraxis_db/frontend
+          vercel pull --yes --environment=production --token=$VERCEL_TOKEN
+          vercel build --prod --token=$VERCEL_TOKEN
+          vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN

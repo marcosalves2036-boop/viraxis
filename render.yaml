@@ -1,18 +1,19 @@
 services:
-  # ── API FastAPI ───────────────────────────────────────────────────────────────
   - type: web
     name: viraxis-api
-    runtime: docker
-    dockerfilePath: ./Dockerfile
+    runtime: python
     plan: free
+    # Root dir = raiz do repo (onde fica pyproject.toml e src/)
+    buildCommand: pip install -e .
+    startCommand: alembic upgrade head && uvicorn viraxis.api.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
+      - key: PYTHONPATH
+        value: src
       - key: ENVIRONMENT
         value: production
       - key: DEBUG
         value: "false"
-      - key: LOG_LEVEL
-        value: INFO
       - key: SECRET_KEY
         generateValue: true
       - key: JWT_ALGORITHM
@@ -27,14 +28,8 @@ services:
         value: groq/llama-3.3-70b-versatile
       - key: SCOUT_ENABLE_TRANSCRIPTION
         value: "false"
-      # Preencher no painel do Render:
+      # Preencher no painel:
       - key: DATABASE_URL
         sync: false
       - key: LLM_API_KEY
-        sync: false
-      - key: REDIS_URL
-        sync: false
-      - key: CELERY_BROKER_URL
-        sync: false
-      - key: CELERY_RESULT_BACKEND
         sync: false

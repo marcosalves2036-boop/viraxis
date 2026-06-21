@@ -64,6 +64,22 @@ import logging
 
 _startup_logger = logging.getLogger("viraxis.startup")
 
+async def _recover_one(dec) -> None:
+    """Executa o renderer para uma decisão presa, com tratamento de erro isolado."""
+    try:
+        from viraxis.agents.renderer.v2_direct import run_renderer_v2
+        _startup_logger.info("Startup recovery: disparando renderer para decisão %s (%s)", dec.id, dec.selected_topic)
+        await run_renderer_v2(
+            office_id=dec.office_id,
+            user_id=dec.user_id,
+            decision_id=dec.id,
+            extra_instructions=dec.extra_instructions,
+        )
+        _startup_logger.info("Startup recovery: decisão %s concluída", dec.id)
+    except Exception as e:
+        _startup_logger.error("Startup recovery: renderer falhou para %s — %s", dec.id, e, exc_info=True)
+
+
 async def _recover_stuck_decisions() -> None:
     """Re-dispara decisões presas em 'approved' após restart do servidor."""
     await asyncio.sleep(8)  # aguarda DB connections estabilizarem
@@ -82,19 +98,9 @@ async def _recover_stuck_decisions() -> None:
             _startup_logger.info("Startup recovery: nenhuma decisão presa.")
             return
 
-        _startup_logger.warning("Startup recovery: %d decisão(ões) presas em 'approved'", len(stuck))
+        _startup_logger.warning("Startup recovery: %d decisão(ões) presas em 'approved' — re-disparando", len(stuck))
+        await asyncio.gather(*[_recover_one(dec) for dec in stuck], return_exceptions=True)
 
-        # Import here to avoid circular dependency at module load time
-        from viraxis.api.routers.offices import _run_renderer_safe
-        for dec in stuck:
-            asyncio.create_task(
-                _run_renderer_safe(
-                    office_id=dec.office_id,
-                    user_id=dec.user_id,
-                    decision_id=dec.id,
-                    extra_instructions=dec.extra_instructions,
-                )
-            )
     except Exception as e:
         _startup_logger.error("Startup recovery falhou: %s", e, exc_info=True)
 

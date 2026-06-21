@@ -15,6 +15,7 @@ from viraxis.domain.models._base import BaseModelMixin
 class ContentStatus(str, enum.Enum):
     draft = "draft"
     rendering = "rendering"
+    review = "review"
     ready = "ready"
     published = "published"
     failed = "failed"

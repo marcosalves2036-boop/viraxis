@@ -148,6 +148,7 @@ async def run_renderer_v2(
     office_id: UUID,
     user_id: UUID,
     decision_id: UUID,
+    extra_instructions: str | None = None,
 ) -> ContentItem:
     """Renderer v2: LiteLLM/Groq, todos os artefatos em 1 chamada."""
     import litellm
@@ -228,6 +229,10 @@ async def run_renderer_v2(
         trend_context=trend_context,
     )
 
+    if extra_instructions and extra_instructions.strip():
+        prompt += f"\n\nINSTRUÇÕES ADICIONAIS DO CRIADOR:\n{extra_instructions.strip()}"
+        logger.info("RENDERER v2 | extra_instructions injetadas (%d chars)", len(extra_instructions))
+
     # 4. Chamar LLM com retry
     await _update_progress(item_id, 30, "gerando com IA…")
 
@@ -304,7 +309,7 @@ async def run_renderer_v2(
         item.title = titulo_principal
         item.script = script_text
         item.duration_seconds = float(data.get("duracao_estimada_segundos", 60))
-        item.status = ContentStatus.ready
+        item.status = ContentStatus.review
         item.production_meta = {
             "render_progress": 100,
             "render_stage": "concluído",

@@ -84,6 +84,7 @@ class DecisionResponse(BaseModel):
 
 class DecisionStatusUpdate(BaseModel):
     status: str
+    extra_instructions: str | None = None
 
     @field_validator("status")
     @classmethod
@@ -524,6 +525,7 @@ async def update_decision_status(
             office_id=office_id,
             user_id=current_user.id,
             decision_id=decision_id,
+            extra_instructions=body.extra_instructions,
         )
 
     return _decision_to_response(decision)
@@ -719,3 +721,70 @@ async def delete_content_item(
             dec.updated_at = datetime.now(timezone.utc)
 
     await session.commit()
+
+# ── Endpoints: revisão de conteúdo ────────────────────────────────────────────
+
+@router.patch("/{office_id}/content/{item_id}/approve", status_code=200)
+async def approve_content_item(
+    office_id: UUID,
+    item_id: UUID,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Aprova o roteiro gerado → status vira ready."""
+    await _get_office_or_404(office_id, current_user.id, session)
+    result = await session.execute(
+        select(ContentItem).where(
+            ContentItem.id == item_id,
+            ContentItem.office_id == office_id,
+            ContentItem.deleted_at.is_(None),
+        )
+    )
+    item = result.scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item não encontrado")
+    if item.status != ContentStatus.review:
+        raise HTTPException(status_code=400, detail=f"Item não está em review (status atual: {item.status})")
+    item.status = ContentStatus.ready
+    meta = dict(item.production_meta or {})
+    meta["render_progress"] = 100
+    meta["render_stage"] = "aprovado"
+    item.production_meta = meta
+    await session.commit()
+    return {"id": str(item_id), "status": "ready"}
+
+
+@router.patch("/{office_id}/content/{item_id}/reject", status_code=200)
+async def reject_content_item(
+    office_id: UUID,
+    item_id: UUID,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Rejeita o roteiro → soft-delete + decisão volta para pending."""
+    await _get_office_or_404(office_id, current_user.id, session)
+    result = await session.execute(
+        select(ContentItem).where(
+            ContentItem.id == item_id,
+            ContentItem.office_id == office_id,
+            ContentItem.deleted_at.is_(None),
+        )
+    )
+    item = result.scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item não encontrado")
+
+    from datetime import datetime, timezone
+    item.deleted_at = datetime.now(timezone.utc)
+
+    if item.decision_id:
+        dec_r = await session.execute(
+            select(ContentDecision).where(ContentDecision.id == item.decision_id)
+        )
+        dec = dec_r.scalar_one_or_none()
+        if dec:
+            dec.status = DecisionStatus.pending
+
+    await session.commit()
+    return {"id": str(item_id), "status": "rejected", "decision_reset": "pending"}
+

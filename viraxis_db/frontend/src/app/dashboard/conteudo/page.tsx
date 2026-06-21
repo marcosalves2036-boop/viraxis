@@ -56,10 +56,19 @@ const STATUS_LABELS: Record<string, string> = {
 
 // ── Content Detail Modal ──────────────────────────────────────────────────────
 
-function ContentModal({ item, onClose }: { item: ContentItem; onClose: () => void }) {
+function ContentModal({ item, onClose, onDelete }: { item: ContentItem; onClose: () => void; onDelete: (id: string, officeId: string) => Promise<void> }) {
   const [activeTab, setActiveTab] = useState<"roteiro" | "thumbnails" | "seo" | "plano" | "checklist">("roteiro");
   const [selectedThumb, setSelectedThumb] = useState(0);
+  const [deleting, setDeleting] = useState(false);
+  const [confirmDel, setConfirmDel] = useState(false);
   const meta = item.production_meta;
+
+  async function handleDelete() {
+    if (!confirmDel) { setConfirmDel(true); return; }
+    setDeleting(true);
+    await onDelete(item.id, item.office_id ?? "");
+    onClose();
+  }
 
   const tabs = [
     { id: "roteiro" as const, label: "📝 Roteiro" },
@@ -285,6 +294,23 @@ function ContentModal({ item, onClose }: { item: ContentItem; onClose: () => voi
               ) : <p className="text-white/25 text-sm">Checklist não disponível.</p>}
             </div>
           )}
+        {/* Delete footer */}
+        <div className="px-6 pb-5 flex justify-end border-t border-white/[0.05] pt-4">
+          {confirmDel ? (
+            <div className="flex items-center gap-3">
+              <span className="text-white/40 text-xs">Confirmar exclusão?</span>
+              <button onClick={() => setConfirmDel(false)} className="px-3 py-1.5 text-xs text-white/50 hover:text-white/70 transition-colors">Cancelar</button>
+              <button onClick={handleDelete} disabled={deleting}
+                className="px-3 py-1.5 text-xs bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white rounded-lg transition-colors font-semibold">
+                {deleting ? "Deletando…" : "Deletar mesmo assim"}
+              </button>
+            </div>
+          ) : (
+            <button onClick={handleDelete}
+              className="px-3 py-1.5 text-xs text-red-400/60 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors">
+              🗑 Deletar conteúdo
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -341,13 +367,22 @@ function ConteudoInner() {
     if (offices.length > 0) loadContent(officeId);
   }, [offices, officeId]);
 
+  async function deleteItem(itemId: string, officeId: string) {
+    if (!officeId) return;
+    await fetch(`/api/offices/${officeId}/content/${itemId}`, {
+      method: "DELETE",
+      headers,
+    });
+    setItems(prev => prev.filter(i => i.id !== itemId));
+  }
+
   const ready = items.filter(i => i.status === "ready" || i.status === "published");
   const rendering = items.filter(i => i.status === "rendering");
   const failed = items.filter(i => i.status === "failed");
 
   return (
     <>
-      {selectedItem && <ContentModal item={selectedItem} onClose={() => setSelectedItem(null)} />}
+      {selectedItem && <ContentModal item={selectedItem} onClose={() => setSelectedItem(null)} onDelete={deleteItem} />}
 
       <div className="max-w-5xl mx-auto space-y-6">
         <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -414,21 +449,28 @@ function ConteudoInner() {
               const isRendering = item.status === "rendering";
 
               return (
-                <button key={item.id} onClick={() => isReady && setSelectedItem(item)}
-                  className={`text-left p-5 rounded-2xl border transition-all ${isReady ? "card-glass hover:border-violet-500/30 cursor-pointer" : "card-glass opacity-70 cursor-default"} border-white/[0.06]`}>
+                <div key={item.id}
+                  className={`relative text-left p-5 rounded-2xl border transition-all ${isReady ? "card-glass hover:border-violet-500/30" : "card-glass opacity-70"} border-white/[0.06]`}>
 
-                  {/* Status + Office */}
+                  {/* Status + Office + Delete */}
                   <div className="flex items-center justify-between gap-2 mb-3">
-                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${STATUS_STYLES[item.status]}`}>
-                      {STATUS_LABELS[item.status]}
-                    </span>
-                    {item.office_name && (
-                      <span className="text-[10px] text-white/25 truncate">{item.office_name}</span>
-                    )}
+                    <div className="flex items-center gap-2">
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${STATUS_STYLES[item.status]}`}>
+                        {STATUS_LABELS[item.status]}
+                      </span>
+                      {item.office_name && (
+                        <span className="text-[10px] text-white/25 truncate">{item.office_name}</span>
+                      )}
+                    </div>
+                    <button
+                      onClick={e => { e.stopPropagation(); deleteItem(item.id, item.office_id ?? ""); }}
+                      className="text-white/20 hover:text-red-400 transition-colors text-xs px-1.5 py-0.5 rounded hover:bg-red-500/10"
+                      title="Deletar conteúdo"
+                    >🗑</button>
                   </div>
 
                   {/* Title */}
-                  <p className="text-white font-semibold text-sm leading-snug mb-3 line-clamp-2">{item.title}</p>
+                  <p onClick={() => isReady && setSelectedItem(item)} className={`text-white font-semibold text-sm leading-snug mb-3 line-clamp-2 ${isReady ? "cursor-pointer hover:text-violet-200 transition-colors" : ""}`}>{item.title}</p>
 
                   {/* Rendering progress */}
                   {isRendering && (
@@ -457,9 +499,13 @@ function ConteudoInner() {
                   <div className="flex items-center justify-between text-xs text-white/25">
                     <span>{new Date(item.created_at).toLocaleDateString("pt-BR")}</span>
                     {item.duration_seconds && <span>⏱ {Math.round(item.duration_seconds)}s</span>}
-                    {isReady && <span className="text-violet-400/60">Ver detalhes →</span>}
+                    {isReady && (
+                      <button onClick={() => setSelectedItem(item)} className="text-violet-400/60 hover:text-violet-300 transition-colors">
+                        Ver detalhes →
+                      </button>
+                    )}
                   </div>
-                </button>
+                </div>
               );
             })}
           </div>

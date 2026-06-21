@@ -643,3 +643,47 @@ async def list_office_content(
         )
         for i in items
     ]
+
+
+@router.delete(
+    "/{office_id}/content/{item_id}",
+    status_code=204,
+)
+async def delete_content_item(
+    office_id: UUID,
+    item_id: UUID,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Soft-delete de um ContentItem. Também reseta a decisão associada para 'pending'."""
+    from viraxis.domain.models.content_item import ContentItem
+    from datetime import datetime, timezone
+
+    await _get_office_or_404(office_id, current_user.id, session)
+
+    item_result = await session.execute(
+        select(ContentItem).where(
+            ContentItem.id == item_id,
+            ContentItem.office_id == office_id,
+            ContentItem.deleted_at.is_(None),
+        )
+    )
+    item = item_result.scalar_one_or_none()
+    if not item:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Content item não encontrado")
+
+    # Soft-delete
+    item.deleted_at = datetime.now(timezone.utc)
+
+    # Reset decisão associada para pending (se houver)
+    if item.decision_id:
+        dec_result = await session.execute(
+            select(ContentDecision).where(ContentDecision.id == item.decision_id)
+        )
+        dec = dec_result.scalar_one_or_none()
+        if dec:
+            dec.status = DecisionStatus.pending
+            dec.updated_at = datetime.now(timezone.utc)
+
+    await session.commit()

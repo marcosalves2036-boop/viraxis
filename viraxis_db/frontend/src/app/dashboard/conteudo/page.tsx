@@ -295,6 +295,7 @@ function ContentModal({ item, onClose, onDelete }: { item: ContentItem; onClose:
               ) : <p className="text-white/25 text-sm">Checklist não disponível.</p>}
             </div>
           )}
+        </div>
         {/* Delete footer */}
         <div className="px-6 pb-5 flex justify-end border-t border-white/[0.05] pt-4">
           {confirmDel ? (

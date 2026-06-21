@@ -66,12 +66,11 @@ _startup_logger = logging.getLogger("viraxis.startup")
 
 async def _recover_stuck_decisions() -> None:
     """Re-dispara decisões presas em 'approved' após restart do servidor."""
-    await asyncio.sleep(5)  # aguarda DB connections estabilizarem
+    await asyncio.sleep(8)  # aguarda DB connections estabilizarem
     try:
         from sqlalchemy import select
         from viraxis.domain.models.content_decision import ContentDecision, DecisionStatus
         from viraxis.infrastructure.database.session import AsyncSessionLocal
-        from viraxis.api.routers.offices import _run_renderer_safe
 
         async with AsyncSessionLocal() as session:
             result = await session.execute(
@@ -79,21 +78,25 @@ async def _recover_stuck_decisions() -> None:
             )
             stuck = result.scalars().all()
 
-        if stuck:
-            _startup_logger.warning("Startup recovery: %d decisão(ões) presa(s) em 'approved' — re-disparando renderer", len(stuck))
-            for dec in stuck:
-                asyncio.create_task(
-                    _run_renderer_safe(
-                        office_id=dec.office_id,
-                        user_id=dec.user_id,
-                        decision_id=dec.id,
-                        extra_instructions=dec.extra_instructions,
-                    )
-                )
-        else:
+        if not stuck:
             _startup_logger.info("Startup recovery: nenhuma decisão presa.")
+            return
+
+        _startup_logger.warning("Startup recovery: %d decisão(ões) presas em 'approved'", len(stuck))
+
+        # Import here to avoid circular dependency at module load time
+        from viraxis.api.routers.offices import _run_renderer_safe
+        for dec in stuck:
+            asyncio.create_task(
+                _run_renderer_safe(
+                    office_id=dec.office_id,
+                    user_id=dec.user_id,
+                    decision_id=dec.id,
+                    extra_instructions=dec.extra_instructions,
+                )
+            )
     except Exception as e:
-        _startup_logger.error("Startup recovery falhou: %s", e)
+        _startup_logger.error("Startup recovery falhou: %s", e, exc_info=True)
 
 
 @app.on_event("startup")

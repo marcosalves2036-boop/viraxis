@@ -109,17 +109,18 @@ Retorne APENAS este JSON (todos os campos obrigatórios, sem texto antes ou depo
 
 
 async def _update_progress(item_id: UUID, progress: int, stage: str) -> None:
+    import json as _json
     from sqlalchemy import text
+    # Build JSON in Python — avoids PostgreSQL type inference issues with jsonb_build_object($1)
+    new_meta = _json.dumps({"render_progress": progress, "render_stage": stage})
     async with AsyncSessionLocal() as s:
-        # Merge into existing JSONB to preserve other fields
         await s.execute(
-            text("""
-                UPDATE content_items
-                SET production_meta = COALESCE(production_meta, '{}'::jsonb)
-                    || jsonb_build_object('render_progress', :progress, 'render_stage', :stage)
-                WHERE id = :item_id
-            """),
-            {"progress": progress, "stage": stage, "item_id": str(item_id)},
+            text(
+                "UPDATE content_items "
+                "SET production_meta = COALESCE(production_meta, '{}' ::jsonb) || CAST(:new_meta AS jsonb) "
+                "WHERE id = CAST(:item_id AS uuid)"
+            ),
+            {"new_meta": new_meta, "item_id": str(item_id)},
         )
         await s.commit()
 

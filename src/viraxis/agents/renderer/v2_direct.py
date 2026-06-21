@@ -1,15 +1,12 @@
-"""Renderer v2 — chamada direta à API Anthropic, output JSON estruturado.
+"""Renderer v2 — LiteLLM (Groq), output JSON estruturado, todos os artefatos em 1 chamada.
 
-Gera em UMA chamada todos os artefatos:
+Gera em UMA chamada:
   - Roteiro completo (hook / desenvolvimento / clímax / CTA)
   - 3 variações de título
   - 3 conceitos de thumbnail
   - SEO / metadata
   - Plano de postagem
   - Checklist de produção
-
-Davi: single call, retry logic, progress via production_meta.
-Kevin: variações, voz do canal, checklist acionável.
 """
 
 import json
@@ -30,7 +27,7 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 3
 
 SYSTEM_PROMPT = """Você é o RENDERER da Viraxis — especialista em criação de conteúdo viral.
-Responda APENAS com JSON válido, sem markdown, sem texto extra."""
+Responda APENAS com JSON válido, sem markdown, sem texto extra, sem comentários."""
 
 USER_PROMPT = """Crie um pacote completo de produção para este conteúdo:
 
@@ -50,7 +47,7 @@ DECISÃO DO BRAIN
 TENDÊNCIAS RECENTES
 {trend_context}
 
-Retorne este JSON (todos os campos obrigatórios):
+Retorne APENAS este JSON (todos os campos obrigatórios, sem texto antes ou depois):
 {{
   "roteiro": {{
     "hook": "primeiros 3-5 segundos que capturam atenção imediata",
@@ -59,46 +56,46 @@ Retorne este JSON (todos os campos obrigatórios):
     "cta": "call-to-action final específico para {platform}"
   }},
   "titulos": [
-    "Título 1 — mais viral/clickbait com emoji",
+    "Título 1 — mais viral com emoji",
     "Título 2 — otimizado para busca",
     "Título 3 — criativo/alternativo"
   ],
   "thumbnails": [
     {{
       "descricao": "conceito visual principal",
-      "cores_principais": ["#hex1", "#hex2"],
+      "cores_principais": ["#FF0000", "#FFFFFF"],
       "elementos": ["elemento 1", "elemento 2"],
-      "texto_overlay": "texto em destaque (curto)",
+      "texto_overlay": "texto em destaque curto",
       "composicao": "descrição do layout"
     }},
     {{
       "descricao": "variação 2",
-      "cores_principais": ["#hex1", "#hex2"],
+      "cores_principais": ["#0000FF", "#FFFF00"],
       "elementos": ["elem1", "elem2"],
       "texto_overlay": "texto alternativo",
       "composicao": "layout alternativo"
     }},
     {{
-      "descricao": "variação 3 — minimalista",
-      "cores_principais": ["#hex1"],
+      "descricao": "variação 3 minimalista",
+      "cores_principais": ["#000000"],
       "elementos": ["elem principal"],
       "texto_overlay": "texto mínimo",
       "composicao": "composição simples"
     }}
   ],
   "seo": {{
-    "titulo_otimizado": "título com keyword no início (max 60 chars)",
-    "descricao": "2-3 parágrafos com keywords naturais",
+    "titulo_otimizado": "título com keyword no início max 60 chars",
+    "descricao": "2 parágrafos com keywords naturais",
     "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"],
     "hashtags": ["#hashtag1", "#hashtag2", "#hashtag3"],
     "categoria": "categoria da plataforma"
   }},
   "plano_postagem": {{
-    "melhor_dia": "ex: Sábado",
-    "melhor_horario": "ex: 19h-21h",
-    "frequencia_ideal": "ex: 3x por semana",
+    "melhor_dia": "Sábado",
+    "melhor_horario": "19h-21h",
+    "frequencia_ideal": "3x por semana",
     "estrategia_reposts": "como adaptar para outras plataformas",
-    "notas": "dica para maximizar alcance neste nicho"
+    "notas": "dica para maximizar alcance"
   }},
   "checklist_producao": [
     "Item acionável 1",
@@ -112,12 +109,17 @@ Retorne este JSON (todos os campos obrigatórios):
 
 
 async def _update_progress(item_id: UUID, progress: int, stage: str) -> None:
-    from sqlalchemy import update as sa_update
+    from sqlalchemy import text
     async with AsyncSessionLocal() as s:
+        # Merge into existing JSONB to preserve other fields
         await s.execute(
-            sa_update(ContentItem)
-            .where(ContentItem.id == item_id)
-            .values(production_meta={"render_progress": progress, "render_stage": stage})
+            text("""
+                UPDATE content_items
+                SET production_meta = COALESCE(production_meta, '{}'::jsonb)
+                    || jsonb_build_object('render_progress', :progress, 'render_stage', :stage)
+                WHERE id = :item_id
+            """),
+            {"progress": progress, "stage": stage, "item_id": str(item_id)},
         )
         await s.commit()
 
@@ -130,7 +132,7 @@ async def _mark_failed(item_id: UUID, decision_id: UUID, error: str) -> None:
             .where(ContentItem.id == item_id)
             .values(
                 status=ContentStatus.failed,
-                production_meta={"render_progress": 0, "render_stage": "falhou", "error": error},
+                production_meta={"render_progress": 0, "render_stage": "falhou", "error": str(error)[:500]},
             )
         )
         await s.execute(
@@ -146,11 +148,13 @@ async def run_renderer_v2(
     user_id: UUID,
     decision_id: UUID,
 ) -> ContentItem:
-    """Renderer v2: Anthropic direto, todos os artefatos em 1 chamada."""
-    import anthropic
+    """Renderer v2: LiteLLM/Groq, todos os artefatos em 1 chamada."""
+    import litellm
+    litellm.set_verbose = False
 
     settings = get_settings()
-    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    model = settings.renderer_llm_model  # groq/llama-3.3-70b-versatile
+    api_key = settings.llm_api_key
 
     # 1. Carregar decisão + contexto
     async with AsyncSessionLocal() as session:
@@ -200,7 +204,8 @@ async def run_renderer_v2(
         await session.refresh(item)
         item_id = item.id
 
-    logger.info("RENDERER v2 | office=%s decision=%s item=%s", office_id, decision_id, item_id)
+    logger.info("RENDERER v2 | office=%s decision=%s item=%s model=%s",
+                office_id, decision_id, item_id, model)
 
     # 3. Contexto de tendências
     if trend_signals:
@@ -222,27 +227,40 @@ async def run_renderer_v2(
         trend_context=trend_context,
     )
 
-    # 4. Chamar Claude com retry
-    await _update_progress(item_id, 30, "gerando com Claude AI…")
+    # 4. Chamar LLM com retry
+    await _update_progress(item_id, 30, "gerando com IA…")
 
     last_error: Exception | None = None
     data: dict | None = None
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            msg = await client.messages.create(
-                model="claude-3-5-haiku-20241022",
+            response = await litellm.acompletion(
+                model=model,
+                api_key=api_key,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
                 max_tokens=4096,
-                system=SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
             )
-            raw = msg.content[0].text.strip()
+            raw = response.choices[0].message.content.strip()
+
+            # Strip markdown code fences if present
             if "```" in raw:
                 parts = raw.split("```")
                 raw = parts[1]
                 if raw.startswith("json"):
                     raw = raw[4:].lstrip("\n")
+
+            # Find first { to handle any stray text before JSON
+            start = raw.find("{")
+            if start > 0:
+                raw = raw[start:]
+
             data = json.loads(raw)
+            logger.info("RENDERER v2 tentativa %d OK | item=%s", attempt, item_id)
             break
         except Exception as e:
             last_error = e
@@ -252,7 +270,9 @@ async def run_renderer_v2(
                 await asyncio.sleep(2 ** attempt)
 
     if data is None:
-        await _mark_failed(item_id, decision_id, str(last_error))
+        error_msg = str(last_error)
+        logger.error("RENDERER v2 falhou definitivamente | item=%s error=%s", item_id, error_msg)
+        await _mark_failed(item_id, decision_id, error_msg)
         raise RuntimeError(f"RENDERER v2 falhou após {MAX_RETRIES} tentativas: {last_error}")
 
     await _update_progress(item_id, 80, "salvando artefatos…")
@@ -273,7 +293,7 @@ async def run_renderer_v2(
         f"## 📣 CALL TO ACTION\n{rot.get('cta', '')}\n"
     )
 
-    # 6. Salvar resultado
+    # 6. Salvar resultado completo
     async with AsyncSessionLocal() as session:
         item_r = await session.execute(select(ContentItem).where(ContentItem.id == item_id))
         item = item_r.scalar_one()
@@ -298,5 +318,5 @@ async def run_renderer_v2(
         await session.commit()
         await session.refresh(item)
 
-    logger.info("RENDERER v2 concluído | item=%s title=%.50s", item_id, titulo_principal)
+    logger.info("RENDERER v2 concluído | item=%s title=%.60s", item_id, titulo_principal)
     return item

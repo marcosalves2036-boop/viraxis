@@ -514,6 +514,9 @@ async def update_decision_status(
         raise HTTPException(status_code=404, detail="Decisão não encontrada")
 
     decision.status = DecisionStatus(body.status)
+    # Persist extra_instructions so renderer can read from DB (not just memory)
+    if body.extra_instructions is not None:
+        decision.extra_instructions = body.extra_instructions
     session.add(decision)
     await session.commit()
     await session.refresh(decision)

@@ -77,6 +77,7 @@ class ContentDecision(BaseModelMixin, Base):
     selected_topic: Mapped[str | None] = mapped_column(String(512), nullable=True)
     selected_platform: Mapped[str | None] = mapped_column(String(64), nullable=True)
     confidence_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    extra_instructions: Mapped[str | None] = mapped_column(Text, nullable=True, comment="Instruções adicionais do criador para o roteiro.")
 
     # Inputs que embasaram a decisão (snapshot das evidências no momento)
     input_signals: Mapped[dict] = mapped_column(

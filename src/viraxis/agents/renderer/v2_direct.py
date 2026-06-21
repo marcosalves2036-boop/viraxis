@@ -170,6 +170,10 @@ async def run_renderer_v2(
         if not decision:
             raise ValueError(f"Decisão {decision_id} não encontrada")
 
+        # Use extra_instructions from DB (persisted on approve) or fall back to param
+        if decision.extra_instructions:
+            extra_instructions = decision.extra_instructions
+
         niche_repo = NicheProfileRepository(session)
         niche = await niche_repo.get_by_office_or_raise(office_id)
 

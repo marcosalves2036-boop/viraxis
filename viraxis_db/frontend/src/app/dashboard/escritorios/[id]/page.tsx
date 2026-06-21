@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { auth } from "@/lib/api";
 
@@ -22,11 +22,15 @@ interface Decision {
   created_at: string; updated_at: string;
 }
 
+interface RenderProgress {
+  item_id: string | null; progress: number; stage: string; status: string;
+}
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const PLATFORM_ICONS: Record<string, string> = {
   tiktok: "🎵", instagram: "📸", youtube: "▶️", twitter: "🐦",
-  linkedin: "💼", facebook: "👥", pinterest: "📌", default: "🌐",
+  linkedin: "💼", facebook: "👥", kwai: "📱", default: "🌐",
 };
 
 const STATUS_STYLES: Record<string, string> = {
@@ -39,39 +43,41 @@ const STATUS_STYLES: Record<string, string> = {
 };
 
 const STATUS_LABELS: Record<string, string> = {
-  pending: "⏳ Pendente", approved: "✅ Aprovada", executing: "⚙️ Executando",
+  pending: "⏳ Pendente", approved: "✅ Aprovada", executing: "⚙ Executando",
   done: "🎯 Concluída", rejected: "❌ Rejeitada", failed: "💥 Falhou",
 };
 
-const STATUS_FILTERS = ["todos", "pending", "approved", "done", "rejected"];
+const STATUS_FILTERS = ["todos", "pending", "approved", "executing", "done", "rejected"];
 
-function ConfidenceGauge({ score }: { score: number }) {
-  const pct = Math.round(score * 100);
-  const color = pct >= 75 ? "#10b981" : pct >= 50 ? "#f59e0b" : "#ef4444";
-  const r = 28, circ = 2 * Math.PI * r;
-  const dash = (pct / 100) * circ;
+// ── Render Progress Bar ───────────────────────────────────────────────────────
+
+function RenderProgressBar({ progress, stage }: { progress: number; stage: string }) {
   return (
-    <div className="flex flex-col items-center gap-1">
-      <svg width="72" height="72" viewBox="0 0 72 72">
-        <circle cx="36" cy="36" r={r} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="6" />
-        <circle cx="36" cy="36" r={r} fill="none" stroke={color} strokeWidth="6"
-          strokeDasharray={`${dash} ${circ}`} strokeLinecap="round"
-          transform="rotate(-90 36 36)" style={{ transition: "stroke-dasharray 0.6s ease" }}
+    <div className="mt-3 space-y-1.5">
+      <div className="flex justify-between text-xs text-white/40">
+        <span>🤖 {stage}</span>
+        <span>{progress}%</span>
+      </div>
+      <div className="h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
+        <div
+          className="h-full rounded-full bg-gradient-to-r from-violet-500 to-cyan-400 transition-all duration-700"
+          style={{ width: `${progress}%` }}
         />
-        <text x="36" y="41" textAnchor="middle" fill="white" fontSize="14" fontWeight="bold">{pct}%</text>
-      </svg>
-      <span className="text-white/30 text-[10px]">confiança</span>
+      </div>
     </div>
   );
 }
 
-// ── Decision Detail Modal ─────────────────────────────────────────────────────
+// ── Decision Modal ────────────────────────────────────────────────────────────
 
 function DecisionModal({
-  decision, officeId, onClose, onStatusChange,
+  decision, officeId, renderProgress, onClose, onStatusChange, onViewContent,
 }: {
   decision: Decision; officeId: string;
-  onClose: () => void; onStatusChange: (d: Decision) => void;
+  renderProgress: RenderProgress | null;
+  onClose: () => void;
+  onStatusChange: (d: Decision) => void;
+  onViewContent: (itemId: string) => void;
 }) {
   const [loading, setLoading] = useState<string | null>(null);
   const token = typeof window !== "undefined" ? localStorage.getItem("viraxis_token") : null;
@@ -90,131 +96,133 @@ function DecisionModal({
 
   const signals = decision.input_signals as Record<string, unknown>;
   const reasoning = decision.reasoning as Record<string, unknown>;
+  const isExecuting = decision.status === "executing";
+  const isDone = decision.status === "done";
+  const progress = renderProgress?.progress ?? 0;
+  const stage = renderProgress?.stage ?? "processando";
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
       <div
         className="relative w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-2xl border"
-        style={{ background: "rgba(10,11,18,0.98)", borderColor: "var(--border)" }}
+        style={{ background: "rgba(10,11,18,0.98)", borderColor: "rgba(255,255,255,0.08)" }}
         onClick={e => e.stopPropagation()}
       >
-        {/* Header */}
-        <div className="flex items-start justify-between p-6 border-b" style={{ borderColor: "var(--border)" }}>
-          <div className="flex-1 min-w-0 pr-4">
-            <div className="flex items-center gap-2 mb-1 flex-wrap">
-              <span className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${STATUS_STYLES[decision.status] ?? ""}`}>
-                {STATUS_LABELS[decision.status] ?? decision.status}
-              </span>
-              <span className="text-xs text-white/30">
-                {PLATFORM_ICONS[decision.target_platform] ?? "🌐"} {decision.target_platform}
-              </span>
-            </div>
-            <h2 className="text-lg font-bold text-white">{decision.content_topic || "Sem tópico"}</h2>
-            <p className="text-white/30 text-xs mt-0.5">
-              {new Date(decision.created_at).toLocaleString("pt-BR")}
-            </p>
-          </div>
-          <ConfidenceGauge score={decision.confidence_score} />
-        </div>
-
-        {/* Body */}
         <div className="p-6 space-y-5">
-          {/* Archetype */}
-          {decision.selected_archetype && (
-            <div>
-              <p className="text-xs font-semibold text-white/40 uppercase tracking-wider mb-1.5">Archetype Viral</p>
-              <span className="inline-block px-3 py-1.5 rounded-lg bg-violet-500/15 border border-violet-500/30 text-violet-300 text-sm font-medium">
-                🎭 {decision.selected_archetype}
-              </span>
+          {/* Header */}
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap mb-2">
+                <span className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${STATUS_STYLES[decision.status]}`}>
+                  {STATUS_LABELS[decision.status]}
+                </span>
+                <span className="text-xs text-white/30">
+                  {PLATFORM_ICONS[decision.target_platform] ?? "🌐"} {decision.target_platform}
+                </span>
+              </div>
+              <h2 className="text-lg font-bold text-white leading-tight">{decision.content_topic}</h2>
+            </div>
+            <div className="shrink-0">
+              <div className="w-14 h-14 rounded-full flex items-center justify-center border-2 text-base font-black"
+                style={{
+                  borderColor: decision.confidence_score >= 0.75 ? "#10b981" : decision.confidence_score >= 0.5 ? "#f59e0b" : "#ef4444",
+                  color: decision.confidence_score >= 0.75 ? "#10b981" : decision.confidence_score >= 0.5 ? "#f59e0b" : "#ef4444",
+                }}
+              >
+                {Math.round(decision.confidence_score * 100)}%
+              </div>
+              <p className="text-[10px] text-white/25 text-center mt-1">confiança</p>
+            </div>
+          </div>
+
+          {/* Render progress (when executing) */}
+          {isExecuting && (
+            <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-4">
+              <p className="text-blue-300 text-sm font-semibold mb-2">🤖 RENDERER em ação…</p>
+              <RenderProgressBar progress={progress} stage={stage} />
+              <p className="text-blue-300/50 text-xs mt-2">Gerando roteiro, thumbnails, SEO e plano de postagem</p>
+            </div>
+          )}
+
+          {/* Done state — link to content */}
+          {isDone && renderProgress?.item_id && (
+            <div className="bg-violet-500/10 border border-violet-500/20 rounded-xl p-4 flex items-center justify-between gap-4">
+              <div>
+                <p className="text-violet-300 text-sm font-semibold">🎯 Conteúdo gerado com sucesso!</p>
+                <p className="text-violet-300/50 text-xs mt-0.5">Roteiro, thumbnails, SEO e checklist prontos</p>
+              </div>
+              <button
+                onClick={() => onViewContent(renderProgress.item_id!)}
+                className="px-4 py-2 bg-violet-600 hover:bg-violet-500 text-white text-sm font-bold rounded-xl transition-colors shrink-0"
+              >
+                Ver conteúdo →
+              </button>
             </div>
           )}
 
           {/* Hypothesis */}
           <div>
-            <p className="text-xs font-semibold text-white/40 uppercase tracking-wider mb-2">💡 Hipótese do BRAIN</p>
-            <div className="bg-white/[0.03] border border-white/[0.06] rounded-xl p-4">
-              <p className="text-white/80 text-sm leading-relaxed">{decision.hypothesis}</p>
-            </div>
+            <p className="text-xs font-semibold text-white/40 uppercase tracking-wider mb-2">Hipótese do BRAIN</p>
+            <p className="text-white/70 text-sm leading-relaxed">{decision.hypothesis}</p>
           </div>
+
+          {/* Archetype */}
+          {decision.selected_archetype && (
+            <div>
+              <p className="text-xs font-semibold text-white/40 uppercase tracking-wider mb-1">Archetype viral</p>
+              <span className="inline-block px-3 py-1 bg-violet-500/10 border border-violet-500/20 rounded-lg text-violet-300 text-sm">
+                🎭 {decision.selected_archetype}
+              </span>
+            </div>
+          )}
 
           {/* Reasoning */}
           {Object.keys(reasoning).length > 0 && (
             <div>
-              <p className="text-xs font-semibold text-white/40 uppercase tracking-wider mb-2">🔍 Chain-of-Thought</p>
-              <div className="bg-black/40 rounded-xl p-4 max-h-48 overflow-y-auto">
-                <pre className="text-white/60 text-xs whitespace-pre-wrap font-mono leading-relaxed">
-                  {JSON.stringify(reasoning, null, 2)}
-                </pre>
+              <p className="text-xs font-semibold text-white/40 uppercase tracking-wider mb-2">Raciocínio</p>
+              <div className="space-y-1.5">
+                {Object.entries(reasoning).slice(0, 4).map(([k, v]) => (
+                  <div key={k} className="flex gap-2 text-xs">
+                    <span className="text-white/30 capitalize shrink-0">{k.replace(/_/g, " ")}:</span>
+                    <span className="text-white/55">{String(v)}</span>
+                  </div>
+                ))}
               </div>
             </div>
           )}
 
-          {/* Input Signals */}
+          {/* Signals */}
           {Object.keys(signals).length > 0 && (
             <div>
-              <p className="text-xs font-semibold text-white/40 uppercase tracking-wider mb-2">📡 Sinais de Input</p>
-              <div className="grid grid-cols-2 gap-2">
-                {signals.niche_name && (
-                  <div className="bg-white/[0.03] rounded-lg p-3">
-                    <p className="text-white/30 text-[10px] uppercase mb-1">Nicho</p>
-                    <p className="text-white/70 text-xs">{String(signals.niche_name)}</p>
-                  </div>
-                )}
-                {Array.isArray(signals.target_platforms) && (
-                  <div className="bg-white/[0.03] rounded-lg p-3">
-                    <p className="text-white/30 text-[10px] uppercase mb-1">Plataformas</p>
-                    <p className="text-white/70 text-xs">{(signals.target_platforms as string[]).join(", ")}</p>
-                  </div>
-                )}
-                {Array.isArray(signals.top_keywords) && (
-                  <div className="bg-white/[0.03] rounded-lg p-3 col-span-2">
-                    <p className="text-white/30 text-[10px] uppercase mb-1">Keywords em Alta</p>
-                    <div className="flex flex-wrap gap-1 mt-1">
-                      {(signals.top_keywords as string[]).slice(0, 6).map((k: string) => (
-                        <span key={k} className="text-[10px] px-2 py-0.5 rounded bg-white/[0.06] text-white/50">{k}</span>
-                      ))}
-                    </div>
-                  </div>
-                )}
+              <p className="text-xs font-semibold text-white/40 uppercase tracking-wider mb-2">Sinais de entrada</p>
+              <div className="flex flex-wrap gap-1.5">
+                {Object.entries(signals).slice(0, 6).map(([k, v]) => (
+                  <span key={k} className="text-xs px-2 py-1 rounded-md bg-white/[0.05] text-white/40">
+                    {k}: {String(v).substring(0, 30)}
+                  </span>
+                ))}
               </div>
             </div>
           )}
         </div>
 
-        {/* Actions */}
-        <div className="px-6 pb-6 flex flex-wrap gap-3">
+        {/* Action buttons */}
+        <div className="px-6 pb-6 flex gap-3 flex-wrap">
           {decision.status === "pending" && (
             <>
-              <button
-                onClick={() => patchStatus("approved")}
-                disabled={loading !== null}
-                className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-bold rounded-xl transition-colors"
-              >
+              <button onClick={() => patchStatus("approved")} disabled={loading !== null}
+                className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-bold rounded-xl transition-colors">
                 {loading === "approved" ? "..." : "✅ Aprovar"}
               </button>
-              <button
-                onClick={() => patchStatus("rejected")}
-                disabled={loading !== null}
-                className="flex-1 py-2.5 bg-red-600/30 hover:bg-red-600/50 border border-red-500/40 disabled:opacity-50 text-red-300 text-sm font-bold rounded-xl transition-colors"
-              >
+              <button onClick={() => patchStatus("rejected")} disabled={loading !== null}
+                className="flex-1 py-2.5 bg-red-900/60 hover:bg-red-800/60 disabled:opacity-50 text-white text-sm font-bold rounded-xl transition-colors">
                 {loading === "rejected" ? "..." : "❌ Rejeitar"}
               </button>
             </>
           )}
-          {decision.status === "approved" && (
-            <button
-              onClick={() => patchStatus("executing")}
-              disabled={loading !== null}
-              className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-bold rounded-xl transition-colors"
-            >
-              {loading === "executing" ? "..." : "⚙️ Iniciar Execução"}
-            </button>
-          )}
-          <button
-            onClick={onClose}
-            className="px-5 py-2.5 bg-white/[0.06] hover:bg-white/[0.10] text-white/60 text-sm rounded-xl transition-colors"
-          >
+          <button onClick={onClose}
+            className="px-5 py-2.5 bg-white/[0.06] hover:bg-white/[0.10] text-white/60 text-sm rounded-xl transition-colors">
             Fechar
           </button>
         </div>
@@ -233,9 +241,11 @@ export default function OfficeDetailPage() {
   const [decisions, setDecisions] = useState<Decision[]>([]);
   const [statusFilter, setStatusFilter] = useState("todos");
   const [selectedDecision, setSelectedDecision] = useState<Decision | null>(null);
+  const [renderProgresses, setRenderProgresses] = useState<Record<string, RenderProgress>>({});
   const [brainLoading, setBrainLoading] = useState(false);
   const [brainMsg, setBrainMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [loading, setLoading] = useState(true);
+  const pollingRef = useRef<NodeJS.Timeout | null>(null);
 
   const token = typeof window !== "undefined" ? localStorage.getItem("viraxis_token") : null;
   const headers = { Authorization: `Bearer ${token}` };
@@ -246,6 +256,23 @@ export default function OfficeDetailPage() {
     if (r.ok) setDecisions(await r.json());
   }, [id, token]);
 
+  // Poll render progress for executing decisions
+  const pollProgress = useCallback(async (decisionIds: string[]) => {
+    for (const did of decisionIds) {
+      try {
+        const r = await fetch(`/api/offices/${id}/decisions/${did}/render/progress`, { headers });
+        if (r.ok) {
+          const prog: RenderProgress = await r.json();
+          setRenderProgresses(prev => ({ ...prev, [did]: prog }));
+          // If done, refresh decisions list
+          if (prog.status === "ready" || prog.status === "failed") {
+            await loadDecisions(statusFilter);
+          }
+        }
+      } catch {}
+    }
+  }, [id, token, statusFilter]);
+
   useEffect(() => {
     if (!auth.getToken()) { router.replace("/login"); return; }
     (async () => {
@@ -255,8 +282,7 @@ export default function OfficeDetailPage() {
         if (r.ok) {
           const list: Office[] = await r.json();
           const found = list.find(o => o.id === id);
-          if (found) setOffice(found);
-          else router.replace("/dashboard/escritorios");
+          if (found) setOffice(found); else router.replace("/dashboard/escritorios");
         }
         await loadDecisions("todos");
       } finally { setLoading(false); }
@@ -264,6 +290,17 @@ export default function OfficeDetailPage() {
   }, [id]);
 
   useEffect(() => { loadDecisions(statusFilter); }, [statusFilter]);
+
+  // Auto-poll executing decisions
+  useEffect(() => {
+    const executing = decisions.filter(d => d.status === "executing").map(d => d.id);
+    if (pollingRef.current) clearInterval(pollingRef.current);
+    if (executing.length > 0) {
+      pollProgress(executing); // immediate first poll
+      pollingRef.current = setInterval(() => pollProgress(executing), 3000);
+    }
+    return () => { if (pollingRef.current) clearInterval(pollingRef.current); };
+  }, [decisions]);
 
   async function runBrain() {
     setBrainLoading(true); setBrainMsg(null);
@@ -273,7 +310,7 @@ export default function OfficeDetailPage() {
       });
       const data = await r.json();
       if (r.ok) {
-        setBrainMsg({ ok: true, text: `✅ BRAIN concluiu — decisão: "${data.content_topic}" via ${data.target_platform}` });
+        setBrainMsg({ ok: true, text: `✅ BRAIN concluiu — "${data.content_topic}" via ${data.target_platform}` });
         await loadDecisions(statusFilter);
       } else {
         setBrainMsg({ ok: false, text: `❌ Erro: ${data.detail}` });
@@ -300,18 +337,20 @@ export default function OfficeDetailPage() {
     setDecisions(prev => prev.map(d => d.id === updated.id ? updated : d));
   }
 
+  function handleViewContent(itemId: string) {
+    router.push(`/dashboard/conteudo/${itemId}`);
+  }
+
   const pendingCount = decisions.filter(d => d.status === "pending").length;
   const approvedCount = decisions.filter(d => d.status === "approved").length;
   const doneCount = decisions.filter(d => d.status === "done").length;
+  const executingCount = decisions.filter(d => d.status === "executing").length;
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-[60vh]">
-        <div className="text-white/30 animate-pulse text-sm">Carregando escritório...</div>
-      </div>
-    );
-  }
-
+  if (loading) return (
+    <div className="flex items-center justify-center min-h-[60vh]">
+      <div className="text-white/30 animate-pulse text-sm">Carregando escritório...</div>
+    </div>
+  );
   if (!office) return null;
 
   const isActive = office.status === "active";
@@ -321,8 +360,10 @@ export default function OfficeDetailPage() {
       {selectedDecision && (
         <DecisionModal
           decision={selectedDecision} officeId={id}
+          renderProgress={renderProgresses[selectedDecision.id] ?? null}
           onClose={() => setSelectedDecision(null)}
           onStatusChange={d => { handleStatusChange(d); setSelectedDecision(null); }}
+          onViewContent={handleViewContent}
         />
       )}
 
@@ -330,11 +371,9 @@ export default function OfficeDetailPage() {
         {/* Header */}
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div>
-            <div className="flex items-center gap-2 mb-1">
-              <button onClick={() => router.back()} className="text-white/30 hover:text-white/60 text-sm transition-colors">
-                ← Voltar
-              </button>
-            </div>
+            <button onClick={() => router.back()} className="text-white/30 hover:text-white/60 text-sm transition-colors mb-2 block">
+              ← Voltar
+            </button>
             <div className="flex items-center gap-3 flex-wrap">
               <h1 className="text-2xl font-black text-white">{office.name}</h1>
               <span className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${isActive ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30" : "bg-yellow-500/15 text-yellow-400 border-yellow-500/30"}`}>
@@ -344,6 +383,12 @@ export default function OfficeDetailPage() {
             <p className="text-white/40 text-sm mt-1">{office.niche}</p>
           </div>
           <div className="flex gap-2 flex-wrap">
+            <button
+              onClick={() => router.push(`/dashboard/conteudo?office=${id}`)}
+              className="px-4 py-2 text-sm rounded-xl border border-violet-500/30 text-violet-300 hover:bg-violet-500/10 transition-colors font-medium"
+            >
+              📄 Ver Conteúdos
+            </button>
             <button
               onClick={toggleOfficeStatus}
               className={`px-4 py-2 text-sm rounded-xl border transition-colors font-medium ${isActive ? "border-yellow-500/40 text-yellow-400 hover:bg-yellow-500/10" : "border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10"}`}
@@ -368,6 +413,17 @@ export default function OfficeDetailPage() {
           ))}
         </div>
 
+        {/* Executing alert */}
+        {executingCount > 0 && (
+          <div className="bg-blue-500/10 border border-blue-500/20 rounded-2xl p-4 flex items-center gap-3">
+            <span className="animate-spin text-xl">⚙️</span>
+            <div>
+              <p className="text-blue-300 font-semibold text-sm">RENDERER trabalhando…</p>
+              <p className="text-blue-300/50 text-xs">{executingCount} decisão(ões) sendo processada(s). Atualizando automaticamente.</p>
+            </div>
+          </div>
+        )}
+
         {/* BRAIN Panel */}
         <div className="card-glass rounded-2xl p-6">
           <div className="flex items-center justify-between flex-wrap gap-4">
@@ -391,9 +447,6 @@ export default function OfficeDetailPage() {
               {brainMsg.text}
             </div>
           )}
-          {!isActive && (
-            <p className="mt-3 text-yellow-400/70 text-xs">⚠️ Ative o escritório para executar o BRAIN.</p>
-          )}
         </div>
 
         {/* Platforms + Style */}
@@ -411,7 +464,7 @@ export default function OfficeDetailPage() {
             ) : <p className="text-white/25 text-sm">Nenhuma plataforma configurada</p>}
           </div>
           <div className="card-glass rounded-2xl p-5">
-            <p className="text-xs font-semibold text-white/40 uppercase tracking-wider mb-3">Estilo de Conteúdo</p>
+            <p className="text-xs font-semibold text-white/40 uppercase tracking-wider mb-2">Estilo de Conteúdo</p>
             <p className="text-white/70 text-sm capitalize">{office.content_style}</p>
             {office.target_audience && (
               <>
@@ -422,10 +475,10 @@ export default function OfficeDetailPage() {
           </div>
         </div>
 
-        {/* Decisions List */}
+        {/* Decisions */}
         <div className="card-glass rounded-2xl p-6">
           <div className="flex items-center justify-between flex-wrap gap-4 mb-5">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <h2 className="font-bold text-white">📋 Decisões do BRAIN</h2>
               {pendingCount > 0 && (
                 <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-400 border border-yellow-500/30">
@@ -433,15 +486,11 @@ export default function OfficeDetailPage() {
                 </span>
               )}
             </div>
-            {/* Status filter */}
             <div className="flex gap-1 flex-wrap">
               {STATUS_FILTERS.map(f => (
-                <button
-                  key={f}
-                  onClick={() => setStatusFilter(f)}
-                  className={`px-3 py-1.5 text-xs rounded-lg transition-colors font-medium capitalize ${statusFilter === f ? "bg-violet-600/30 text-violet-300 border border-violet-500/40" : "text-white/40 hover:text-white/60 bg-white/[0.03] border border-transparent"}`}
-                >
-                  {f === "todos" ? "Todos" : STATUS_LABELS[f]?.replace(/^[^\s]+ /, "") ?? f}
+                <button key={f} onClick={() => setStatusFilter(f)}
+                  className={`px-3 py-1.5 text-xs rounded-lg transition-colors font-medium capitalize ${statusFilter === f ? "bg-violet-600/30 text-violet-300 border border-violet-500/40" : "text-white/40 hover:text-white/60 bg-white/[0.03] border border-transparent"}`}>
+                  {f === "todos" ? "Todos" : STATUS_LABELS[f]?.replace(/^.\s/, "") ?? f}
                 </button>
               ))}
             </div>
@@ -456,51 +505,46 @@ export default function OfficeDetailPage() {
             </div>
           ) : (
             <div className="space-y-3">
-              {decisions.map(d => (
-                <button
-                  key={d.id}
-                  onClick={() => setSelectedDecision(d)}
-                  className="w-full text-left p-4 rounded-xl bg-white/[0.03] border border-white/[0.06] hover:border-violet-500/30 hover:bg-white/[0.05] transition-all group"
-                >
-                  <div className="flex items-center gap-4">
-                    {/* Confidence mini gauge */}
-                    <div className="shrink-0">
-                      <div className="w-12 h-12 rounded-full flex items-center justify-center border-2 text-sm font-bold"
+              {decisions.map(d => {
+                const prog = renderProgresses[d.id];
+                const isExec = d.status === "executing";
+                return (
+                  <button key={d.id} onClick={() => setSelectedDecision(d)}
+                    className="w-full text-left p-4 rounded-xl bg-white/[0.03] border border-white/[0.06] hover:border-violet-500/30 hover:bg-white/[0.05] transition-all group">
+                    <div className="flex items-center gap-4">
+                      <div className="shrink-0 w-12 h-12 rounded-full flex items-center justify-center border-2 text-sm font-bold"
                         style={{
                           borderColor: d.confidence_score >= 0.75 ? "#10b981" : d.confidence_score >= 0.5 ? "#f59e0b" : "#ef4444",
                           color: d.confidence_score >= 0.75 ? "#10b981" : d.confidence_score >= 0.5 ? "#f59e0b" : "#ef4444",
-                        }}
-                      >
+                        }}>
                         {Math.round(d.confidence_score * 100)}%
                       </div>
-                    </div>
-
-                    {/* Content */}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1 flex-wrap">
-                        <p className="text-white font-semibold text-sm truncate">
-                          {d.content_topic || "Sem tópico"}
-                        </p>
-                        <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border shrink-0 ${STATUS_STYLES[d.status] ?? ""}`}>
-                          {STATUS_LABELS[d.status] ?? d.status}
-                        </span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1 flex-wrap">
+                          <p className="text-white font-semibold text-sm truncate">{d.content_topic || "Sem tópico"}</p>
+                          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border shrink-0 ${STATUS_STYLES[d.status] ?? ""}`}>
+                            {STATUS_LABELS[d.status] ?? d.status}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-3 text-xs text-white/30">
+                          <span>{PLATFORM_ICONS[d.target_platform] ?? "🌐"} {d.target_platform}</span>
+                          {d.selected_archetype && <span>🎭 {d.selected_archetype}</span>}
+                          <span>{new Date(d.created_at).toLocaleDateString("pt-BR")}</span>
+                        </div>
+                        {isExec && prog && (
+                          <div className="mt-2">
+                            <RenderProgressBar progress={prog.progress} stage={prog.stage} />
+                          </div>
+                        )}
                       </div>
-                      <div className="flex items-center gap-3 text-xs text-white/30">
-                        <span>{PLATFORM_ICONS[d.target_platform] ?? "🌐"} {d.target_platform}</span>
-                        {d.selected_archetype && <span>🎭 {d.selected_archetype}</span>}
-                        <span>{new Date(d.created_at).toLocaleDateString("pt-BR")}</span>
-                      </div>
+                      <span className="text-white/20 group-hover:text-white/50 transition-colors shrink-0">→</span>
                     </div>
-
-                    <span className="text-white/20 group-hover:text-white/50 transition-colors shrink-0">→</span>
-                  </div>
-
-                  {/* Hypothesis preview */}
-                  <p className="mt-2 text-white/30 text-xs line-clamp-2 pl-16 leading-relaxed">
-                    {d.hypothesis}
-                  </p>
-                </button>
-              ))}
+                    {!isExec && (
+                      <p className="mt-2 text-white/30 text-xs line-clamp-1 pl-16">{d.hypothesis}</p>
+                    )}
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>

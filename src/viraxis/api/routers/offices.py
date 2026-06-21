@@ -1,9 +1,12 @@
 """Router de Offices — escritórios + BRAIN + decisões + SCOUT trends."""
 
 import asyncio
+import json
+import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -14,6 +17,8 @@ from viraxis.domain.models.niche_profile import NicheProfile
 from viraxis.domain.models.office import Office, OfficeStatus
 from viraxis.domain.models.user import User
 from viraxis.infrastructure.repositories.content_decision import ContentDecisionRepository
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/offices", tags=["offices"])
 
@@ -440,15 +445,29 @@ async def get_decision(
     return _decision_to_response(decision)
 
 
+
+
+async def _run_renderer_safe(office_id, user_id, decision_id) -> None:
+    """Executa o RENDERER v2 em background sem propagar exceções."""
+    try:
+        from viraxis.agents.renderer.v2_direct import run_renderer_v2
+        await run_renderer_v2(office_id, user_id, decision_id)
+    except Exception as e:
+        logger.error("Background RENDERER falhou | office=%s decision=%s err=%s", office_id, decision_id, e)
+
 @router.patch("/{office_id}/decisions/{decision_id}/status", response_model=DecisionResponse)
 async def update_decision_status(
     office_id: UUID,
     decision_id: UUID,
     body: DecisionStatusUpdate,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    """Aprova, rejeita ou avança o status de uma decisão do BRAIN."""
+    """Aprova, rejeita ou avança o status de uma decisão do BRAIN.
+    
+    Quando status=approved, dispara o RENDERER v2 em background automaticamente.
+    """
     await _get_office_or_404(office_id, current_user.id, session)
 
     result = await session.execute(
@@ -465,6 +484,16 @@ async def update_decision_status(
     session.add(decision)
     await session.commit()
     await session.refresh(decision)
+
+    # Auto-trigger RENDERER quando aprovada
+    if body.status == "approved":
+        background_tasks.add_task(
+            _run_renderer_safe,
+            office_id=office_id,
+            user_id=current_user.id,
+            decision_id=decision_id,
+        )
+
     return _decision_to_response(decision)
 
 
@@ -519,3 +548,98 @@ async def render_decision(
         message="Roteiro gerado com sucesso. ContentItem criado com status=draft.",
     )
 
+
+# ── Endpoints: Progresso do RENDERER ──────────────────────────────────────────
+
+class RenderProgressResponse(BaseModel):
+    item_id: str | None
+    progress: int
+    stage: str
+    status: str
+
+
+@router.get(
+    "/{office_id}/decisions/{decision_id}/render/progress",
+    response_model=RenderProgressResponse,
+)
+async def get_render_progress(
+    office_id: UUID,
+    decision_id: UUID,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Retorna o progresso atual do RENDERER para uma decisão."""
+    from viraxis.domain.models.content_item import ContentItem
+    await _get_office_or_404(office_id, current_user.id, session)
+
+    result = await session.execute(
+        select(ContentItem)
+        .where(ContentItem.decision_id == decision_id)
+        .order_by(ContentItem.created_at.desc())
+        .limit(1)
+    )
+    item = result.scalar_one_or_none()
+
+    if item is None:
+        return RenderProgressResponse(item_id=None, progress=0, stage="aguardando", status="pending")
+
+    meta = item.production_meta or {}
+    return RenderProgressResponse(
+        item_id=str(item.id),
+        progress=meta.get("render_progress", 0),
+        stage=meta.get("render_stage", "processando"),
+        status=item.status.value,
+    )
+
+
+# ── Endpoint: Conteúdo do escritório ──────────────────────────────────────────
+
+class ContentItemSummary(BaseModel):
+    id: str
+    decision_id: str | None
+    title: str
+    status: str
+    duration_seconds: float | None
+    production_meta: dict
+    script: str
+    created_at: str
+
+
+@router.get(
+    "/{office_id}/content",
+    response_model=list[ContentItemSummary],
+)
+async def list_office_content(
+    office_id: UUID,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Lista todos os ContentItems gerados pelo RENDERER para um escritório."""
+    from viraxis.domain.models.content_item import ContentItem
+    from sqlalchemy import desc as sa_desc
+    await _get_office_or_404(office_id, current_user.id, session)
+
+    result = await session.execute(
+        select(ContentItem)
+        .where(
+            ContentItem.office_id == office_id,
+            ContentItem.deleted_at.is_(None),
+        )
+        .order_by(sa_desc(ContentItem.created_at))
+        .limit(100)
+    )
+    items = result.scalars().all()
+
+    return [
+        ContentItemSummary(
+            id=str(i.id),
+            decision_id=str(i.decision_id) if i.decision_id else None,
+            title=i.title,
+            status=i.status.value,
+            duration_seconds=i.duration_seconds,
+            production_meta=i.production_meta or {},
+            script=i.script or "",
+            created_at=i.created_at.isoformat() if i.created_at else "",
+        )
+        for i in items
+    ]

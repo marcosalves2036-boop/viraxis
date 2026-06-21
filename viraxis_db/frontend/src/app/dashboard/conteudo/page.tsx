@@ -1,136 +1,470 @@
 "use client";
 
-import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { auth } from "@/lib/api";
 
-interface Decision {
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+interface ContentItem {
   id: string;
-  content_topic: string;
-  content_format: string;
-  target_platform: string;
-  confidence_score: number;
+  decision_id: string | null;
+  title: string;
+  status: string;
+  duration_seconds: number | null;
+  production_meta: ProductionMeta;
+  script: string;
   created_at: string;
-  office_name?: string;
   office_id?: string;
+  office_name?: string;
 }
 
-interface Office {
-  id: string;
-  name: string;
+interface ProductionMeta {
+  render_progress?: number;
+  render_stage?: string;
+  roteiro?: { hook: string; desenvolvimento: string[]; climax: string; cta: string };
+  titulos?: string[];
+  thumbnails?: ThumbnailConcept[];
+  seo?: { titulo_otimizado: string; descricao: string; tags: string[]; hashtags: string[]; categoria: string };
+  plano_postagem?: { melhor_dia: string; melhor_horario: string; frequencia_ideal: string; estrategia_reposts: string; notas: string };
+  checklist_producao?: string[];
+  error?: string;
 }
 
-const PLATFORM_ICONS: Record<string, string> = {
-  tiktok: "🎵", instagram: "📸", youtube: "▶️", twitter: "🐦", kwai: "📱",
+interface ThumbnailConcept {
+  descricao: string;
+  cores_principais: string[];
+  elementos: string[];
+  texto_overlay: string;
+  composicao: string;
+}
+
+interface Office { id: string; name: string; }
+
+const STATUS_STYLES: Record<string, string> = {
+  draft:     "bg-white/10 text-white/50",
+  rendering: "bg-blue-500/15 text-blue-400",
+  ready:     "bg-emerald-500/15 text-emerald-400",
+  published: "bg-violet-500/15 text-violet-400",
+  failed:    "bg-red-500/15 text-red-400",
 };
 
-const STATUS_FILTERS = ["Todos", "Pendente", "Aprovado", "Publicado"];
+const STATUS_LABELS: Record<string, string> = {
+  draft: "Rascunho", rendering: "⚙ Gerando…", ready: "✅ Pronto",
+  published: "🚀 Publicado", failed: "❌ Falhou",
+};
 
-export default function ConteudoPage() {
-  const [decisions, setDecisions] = useState<Decision[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState("Todos");
+// ── Content Detail Modal ──────────────────────────────────────────────────────
 
-  useEffect(() => {
-    const token = localStorage.getItem("viraxis_token");
-    if (!token) return;
-    const h = { Authorization: `Bearer ${token}` };
+function ContentModal({ item, onClose }: { item: ContentItem; onClose: () => void }) {
+  const [activeTab, setActiveTab] = useState<"roteiro" | "thumbnails" | "seo" | "plano" | "checklist">("roteiro");
+  const [selectedThumb, setSelectedThumb] = useState(0);
+  const meta = item.production_meta;
 
-    // Fetch offices then fetch decisions per office
-    fetch("/api/offices", { headers: h })
-      .then(r => r.json())
-      .then(async (offices: Office[]) => {
-        if (!Array.isArray(offices) || offices.length === 0) return;
-        const all: Decision[] = [];
-        for (const office of offices) {
-          try {
-            const r = await fetch(`/api/offices/${office.id}/decisions`, { headers: h });
-            if (r.ok) {
-              const decs: Decision[] = await r.json();
-              decs.forEach(d => { d.office_name = office.name; d.office_id = office.id; });
-              all.push(...decs);
-            }
-          } catch {}
-        }
-        // Sort by most recent
-        all.sort((a, b) => b.created_at.localeCompare(a.created_at));
-        setDecisions(all);
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
-
-  const filtered = decisions; // status filtering would require backend support
+  const tabs = [
+    { id: "roteiro" as const, label: "📝 Roteiro" },
+    { id: "thumbnails" as const, label: "🖼 Thumbnails" },
+    { id: "seo" as const, label: "📊 SEO" },
+    { id: "plano" as const, label: "📅 Plano" },
+    { id: "checklist" as const, label: "✅ Checklist" },
+  ];
 
   return (
-    <div className="max-w-5xl mx-auto space-y-6">
-      <div>
-        <h1 className="text-2xl font-black text-white">Conteúdo</h1>
-        <p className="text-white/40 text-sm mt-1">Revise e publique os conteúdos gerados pelos agentes.</p>
-      </div>
-
-      {/* Filters */}
-      <div className="flex flex-wrap gap-2">
-        {STATUS_FILTERS.map(f => (
-          <button
-            key={f}
-            onClick={() => setFilter(f)}
-            className={`px-4 py-2 rounded-xl text-sm font-medium border transition-all
-              ${filter === f
-                ? "bg-violet-600/20 border-violet-500/30 text-violet-300"
-                : "bg-white/[0.04] border-white/10 text-white/50 hover:border-white/20"}`}
-          >
-            {f}
-          </button>
-        ))}
-      </div>
-
-      {loading ? (
-        <div className="card-glass rounded-2xl p-12 text-center text-white/30 text-sm">Carregando...</div>
-      ) : filtered.length === 0 ? (
-        <div className="card-glass rounded-2xl p-16 text-center">
-          <div className="text-5xl mb-4">📹</div>
-          <h3 className="text-xl font-bold text-white mb-2">Nenhum conteúdo ainda</h3>
-          <p className="text-white/40 text-sm max-w-sm mx-auto mb-6">
-            Crie um escritório e ative o agente BRAIN para começar a gerar conteúdo viral automaticamente.
-          </p>
-          <Link
-            href="/dashboard/escritorios"
-            className="inline-block px-6 py-3 bg-violet-600 hover:bg-violet-500 text-white font-semibold rounded-xl transition-colors"
-          >
-            Ir para Escritórios →
-          </Link>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {filtered.map(d => (
-            <div key={d.id} className="card-glass rounded-2xl p-5 flex items-center gap-4">
-              <div className="text-2xl shrink-0">
-                {PLATFORM_ICONS[d.target_platform] ?? "📄"}
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-white font-semibold text-sm truncate">{d.content_topic || "Tópico a definir"}</p>
-                <p className="text-white/40 text-xs mt-0.5">
-                  {d.content_format.replace("_", " ")}
-                  {d.office_name && ` · ${d.office_name}`}
-                  {d.created_at && ` · ${new Date(d.created_at).toLocaleDateString("pt-BR")}`}
-                </p>
-              </div>
-              <div className="text-right shrink-0">
-                <p className="text-violet-400 font-bold text-sm">{Math.round((d.confidence_score ?? 0) * 100)}%</p>
-                <p className="text-white/30 text-xs">confiança</p>
-              </div>
-              {d.office_id && (
-                <Link
-                  href={`/dashboard/escritorios/${d.office_id}`}
-                  className="shrink-0 px-3 py-1.5 rounded-lg bg-white/[0.04] border border-white/10 text-white/50 text-xs hover:text-white/70 hover:border-white/20 transition-colors"
-                >
-                  Ver →
-                </Link>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/75 backdrop-blur-sm" />
+      <div
+        className="relative w-full max-w-3xl max-h-[92vh] flex flex-col rounded-2xl border overflow-hidden"
+        style={{ background: "rgba(8,9,16,0.99)", borderColor: "rgba(255,255,255,0.08)" }}
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="px-6 pt-6 pb-4 border-b border-white/[0.06] shrink-0">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex-1 min-w-0">
+              <span className={`inline-block text-xs font-semibold px-2 py-0.5 rounded-full mb-2 ${STATUS_STYLES[item.status]}`}>
+                {STATUS_LABELS[item.status]}
+              </span>
+              <h2 className="text-base font-bold text-white leading-snug">{item.title}</h2>
+              {item.duration_seconds && (
+                <p className="text-white/30 text-xs mt-1">⏱ {Math.round(item.duration_seconds)}s • {item.office_name}</p>
               )}
             </div>
+            <button onClick={onClose} className="text-white/30 hover:text-white/60 text-xl shrink-0">✕</button>
+          </div>
+
+          {/* Title variations */}
+          {meta.titulos && meta.titulos.length > 1 && (
+            <div className="mt-3 space-y-1">
+              <p className="text-xs text-white/30 font-semibold uppercase tracking-wider mb-1.5">Variações de Título</p>
+              {meta.titulos.map((t, i) => (
+                <div key={i} className="flex items-start gap-2">
+                  <span className="text-[10px] text-white/25 shrink-0 mt-0.5">#{i+1}</span>
+                  <p className="text-white/60 text-xs">{t}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Tabs */}
+        <div className="flex gap-0 border-b border-white/[0.06] shrink-0 overflow-x-auto">
+          {tabs.map(t => (
+            <button key={t.id} onClick={() => setActiveTab(t.id)}
+              className={`px-4 py-3 text-xs font-medium whitespace-nowrap transition-colors border-b-2 ${activeTab === t.id ? "border-violet-500 text-violet-300" : "border-transparent text-white/30 hover:text-white/55"}`}>
+              {t.label}
+            </button>
           ))}
         </div>
-      )}
+
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto p-6">
+
+          {/* ROTEIRO */}
+          {activeTab === "roteiro" && (
+            <div className="space-y-4">
+              {meta.roteiro ? (
+                <>
+                  <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-4">
+                    <p className="text-xs font-semibold text-yellow-400 uppercase tracking-wider mb-1.5">🎣 Hook (primeiros segundos)</p>
+                    <p className="text-white/75 text-sm leading-relaxed">{meta.roteiro.hook}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold text-white/40 uppercase tracking-wider mb-2">🎬 Desenvolvimento</p>
+                    <div className="space-y-2">
+                      {meta.roteiro.desenvolvimento.map((cena, i) => (
+                        <div key={i} className="flex gap-3 bg-white/[0.03] rounded-xl p-3">
+                          <span className="text-violet-400 font-bold text-sm shrink-0">{i+1}</span>
+                          <p className="text-white/65 text-sm leading-relaxed">{cena}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-4">
+                    <p className="text-xs font-semibold text-emerald-400 uppercase tracking-wider mb-1.5">⚡ Clímax</p>
+                    <p className="text-white/75 text-sm leading-relaxed">{meta.roteiro.climax}</p>
+                  </div>
+                  <div className="bg-violet-500/10 border border-violet-500/20 rounded-xl p-4">
+                    <p className="text-xs font-semibold text-violet-400 uppercase tracking-wider mb-1.5">📣 Call to Action</p>
+                    <p className="text-white/75 text-sm leading-relaxed">{meta.roteiro.cta}</p>
+                  </div>
+                </>
+              ) : (
+                <pre className="text-white/50 text-xs whitespace-pre-wrap leading-relaxed font-mono">{item.script}</pre>
+              )}
+            </div>
+          )}
+
+          {/* THUMBNAILS */}
+          {activeTab === "thumbnails" && (
+            <div className="space-y-4">
+              {meta.thumbnails && meta.thumbnails.length > 0 ? (
+                <>
+                  {/* Selector */}
+                  <div className="flex gap-2">
+                    {meta.thumbnails.map((_, i) => (
+                      <button key={i} onClick={() => setSelectedThumb(i)}
+                        className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${selectedThumb === i ? "bg-violet-600/30 text-violet-300 border border-violet-500/40" : "bg-white/[0.05] text-white/40 border border-transparent"}`}>
+                        Opção {i + 1}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Selected thumbnail */}
+                  {(() => {
+                    const th = meta.thumbnails![selectedThumb];
+                    return (
+                      <div className="space-y-3">
+                        {/* Color preview */}
+                        <div className="flex items-center gap-3 bg-white/[0.03] rounded-xl p-4">
+                          <div className="flex gap-1.5">
+                            {th.cores_principais.map((c, i) => (
+                              <div key={i} className="w-8 h-8 rounded-lg border border-white/10" style={{ background: c }} title={c} />
+                            ))}
+                          </div>
+                          <div>
+                            <p className="text-white/60 text-xs">{th.cores_principais.join(" · ")}</p>
+                          </div>
+                        </div>
+
+                        <div className="grid gap-3">
+                          <div className="bg-white/[0.03] rounded-xl p-4">
+                            <p className="text-xs text-white/40 uppercase tracking-wider font-semibold mb-1.5">Texto em destaque</p>
+                            <p className="text-white font-bold text-lg">{th.texto_overlay}</p>
+                          </div>
+                          <div className="bg-white/[0.03] rounded-xl p-4">
+                            <p className="text-xs text-white/40 uppercase tracking-wider font-semibold mb-1.5">Conceito visual</p>
+                            <p className="text-white/65 text-sm leading-relaxed">{th.descricao}</p>
+                          </div>
+                          <div className="bg-white/[0.03] rounded-xl p-4">
+                            <p className="text-xs text-white/40 uppercase tracking-wider font-semibold mb-1.5">Composição</p>
+                            <p className="text-white/65 text-sm leading-relaxed">{th.composicao}</p>
+                          </div>
+                          <div>
+                            <p className="text-xs text-white/40 uppercase tracking-wider font-semibold mb-1.5">Elementos visuais</p>
+                            <div className="flex flex-wrap gap-1.5">
+                              {th.elementos.map((e, i) => (
+                                <span key={i} className="text-xs px-2.5 py-1 rounded-lg bg-white/[0.06] text-white/55 border border-white/[0.08]">{e}</span>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </>
+              ) : <p className="text-white/25 text-sm">Conceitos de thumbnail não disponíveis.</p>}
+            </div>
+          )}
+
+          {/* SEO */}
+          {activeTab === "seo" && meta.seo && (
+            <div className="space-y-4">
+              <div className="bg-white/[0.03] rounded-xl p-4">
+                <p className="text-xs text-white/40 uppercase tracking-wider font-semibold mb-1.5">Título otimizado</p>
+                <p className="text-white font-semibold text-sm">{meta.seo.titulo_otimizado}</p>
+              </div>
+              <div className="bg-white/[0.03] rounded-xl p-4">
+                <p className="text-xs text-white/40 uppercase tracking-wider font-semibold mb-1.5">Descrição</p>
+                <p className="text-white/65 text-sm leading-relaxed whitespace-pre-line">{meta.seo.descricao}</p>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <p className="text-xs text-white/40 uppercase tracking-wider font-semibold mb-1.5">Tags</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {meta.seo.tags?.map((t, i) => (
+                      <span key={i} className="text-xs px-2 py-0.5 rounded-md bg-blue-500/10 text-blue-300 border border-blue-500/20">{t}</span>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <p className="text-xs text-white/40 uppercase tracking-wider font-semibold mb-1.5">Hashtags</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {meta.seo.hashtags?.map((h, i) => (
+                      <span key={i} className="text-xs px-2 py-0.5 rounded-md bg-violet-500/10 text-violet-300 border border-violet-500/20">{h}</span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              {meta.seo.categoria && (
+                <div>
+                  <p className="text-xs text-white/40 uppercase tracking-wider font-semibold mb-1">Categoria</p>
+                  <p className="text-white/55 text-sm">{meta.seo.categoria}</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* PLANO */}
+          {activeTab === "plano" && meta.plano_postagem && (
+            <div className="grid gap-3">
+              {[
+                { label: "📅 Melhor dia", value: meta.plano_postagem.melhor_dia },
+                { label: "⏰ Melhor horário", value: meta.plano_postagem.melhor_horario },
+                { label: "🔄 Frequência ideal", value: meta.plano_postagem.frequencia_ideal },
+                { label: "♻️ Estratégia de reposts", value: meta.plano_postagem.estrategia_reposts },
+                { label: "💡 Notas", value: meta.plano_postagem.notas },
+              ].map(({ label, value }) => value && (
+                <div key={label} className="bg-white/[0.03] rounded-xl p-4">
+                  <p className="text-xs text-white/40 uppercase tracking-wider font-semibold mb-1.5">{label}</p>
+                  <p className="text-white/70 text-sm leading-relaxed">{value}</p>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* CHECKLIST */}
+          {activeTab === "checklist" && (
+            <div className="space-y-2">
+              {meta.checklist_producao && meta.checklist_producao.length > 0 ? (
+                meta.checklist_producao.map((item, i) => (
+                  <div key={i} className="flex items-start gap-3 bg-white/[0.03] rounded-xl p-3.5">
+                    <span className="text-emerald-400 shrink-0 mt-0.5">☐</span>
+                    <p className="text-white/65 text-sm leading-relaxed">{item}</p>
+                  </div>
+                ))
+              ) : <p className="text-white/25 text-sm">Checklist não disponível.</p>}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
+  );
+}
+
+// ── Main Page ─────────────────────────────────────────────────────────────────
+
+export default function ConteudoPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const officeFilter = searchParams.get("office");
+
+  const [items, setItems] = useState<ContentItem[]>([]);
+  const [offices, setOffices] = useState<Office[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedItem, setSelectedItem] = useState<ContentItem | null>(null);
+  const [officeId, setOfficeId] = useState(officeFilter ?? "all");
+
+  const token = typeof window !== "undefined" ? localStorage.getItem("viraxis_token") : null;
+  const headers = { Authorization: `Bearer ${token}` };
+
+  const loadContent = useCallback(async (oid: string) => {
+    setLoading(true);
+    try {
+      const officeList = oid === "all" ? offices : offices.filter(o => o.id === oid);
+      const allItems: ContentItem[] = [];
+
+      for (const o of officeList) {
+        try {
+          const r = await fetch(`/api/offices/${o.id}/content`, { headers });
+          if (r.ok) {
+            const data: ContentItem[] = await r.json();
+            data.forEach(d => { d.office_id = o.id; d.office_name = o.name; });
+            allItems.push(...data);
+          }
+        } catch {}
+      }
+
+      allItems.sort((a, b) => b.created_at.localeCompare(a.created_at));
+      setItems(allItems);
+    } finally { setLoading(false); }
+  }, [offices, token]);
+
+  useEffect(() => {
+    if (!auth.getToken()) { router.replace("/login"); return; }
+    (async () => {
+      const r = await fetch("/api/offices", { headers });
+      if (r.ok) setOffices(await r.json());
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (offices.length > 0) loadContent(officeId);
+  }, [offices, officeId]);
+
+  const ready = items.filter(i => i.status === "ready" || i.status === "published");
+  const rendering = items.filter(i => i.status === "rendering");
+  const failed = items.filter(i => i.status === "failed");
+
+  return (
+    <>
+      {selectedItem && <ContentModal item={selectedItem} onClose={() => setSelectedItem(null)} />}
+
+      <div className="max-w-5xl mx-auto space-y-6">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <h1 className="text-2xl font-black text-white">Conteúdo</h1>
+            <p className="text-white/40 text-sm mt-1">Pacotes completos gerados pelo RENDERER — roteiro, thumbnails, SEO e mais.</p>
+          </div>
+          {offices.length > 1 && (
+            <select
+              value={officeId}
+              onChange={e => setOfficeId(e.target.value)}
+              className="px-3 py-2 bg-white/[0.05] border border-white/10 rounded-xl text-white/70 text-sm focus:outline-none focus:border-violet-500/50"
+            >
+              <option value="all">Todos os escritórios</option>
+              {offices.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+            </select>
+          )}
+        </div>
+
+        {/* Stats */}
+        <div className="grid grid-cols-3 gap-4">
+          <div className="card-glass rounded-2xl p-4 text-center">
+            <p className="text-3xl font-black text-emerald-400">{ready.length}</p>
+            <p className="text-white/40 text-xs mt-1">Prontos</p>
+          </div>
+          <div className="card-glass rounded-2xl p-4 text-center">
+            <p className="text-3xl font-black text-blue-400">{rendering.length}</p>
+            <p className="text-white/40 text-xs mt-1">Gerando</p>
+          </div>
+          <div className="card-glass rounded-2xl p-4 text-center">
+            <p className="text-3xl font-black text-white/50">{items.length}</p>
+            <p className="text-white/40 text-xs mt-1">Total</p>
+          </div>
+        </div>
+
+        {/* Generating alert */}
+        {rendering.length > 0 && (
+          <div className="bg-blue-500/10 border border-blue-500/20 rounded-2xl p-4 flex items-center gap-3">
+            <span className="animate-spin text-lg">⚙️</span>
+            <p className="text-blue-300 text-sm">
+              <strong>{rendering.length}</strong> conteúdo(s) sendo gerado(s) pelo RENDERER…
+            </p>
+          </div>
+        )}
+
+        {/* Content grid */}
+        {loading ? (
+          <div className="text-center py-16 text-white/25 text-sm animate-pulse">Carregando conteúdos…</div>
+        ) : items.length === 0 ? (
+          <div className="text-center py-16 card-glass rounded-2xl">
+            <p className="text-5xl mb-4">📝</p>
+            <p className="text-white/30 text-sm">Nenhum conteúdo gerado ainda.</p>
+            <p className="text-white/20 text-xs mt-2">Aprove uma decisão do BRAIN para gerar conteúdo automaticamente.</p>
+            <button onClick={() => router.push("/dashboard/escritorios")}
+              className="mt-4 px-4 py-2 bg-violet-600/30 border border-violet-500/30 text-violet-300 text-sm rounded-xl hover:bg-violet-600/40 transition-colors">
+              Ir para Escritórios →
+            </button>
+          </div>
+        ) : (
+          <div className="grid gap-4 sm:grid-cols-2">
+            {items.map(item => {
+              const meta = item.production_meta;
+              const isReady = item.status === "ready" || item.status === "published";
+              const isRendering = item.status === "rendering";
+
+              return (
+                <button key={item.id} onClick={() => isReady && setSelectedItem(item)}
+                  className={`text-left p-5 rounded-2xl border transition-all ${isReady ? "card-glass hover:border-violet-500/30 cursor-pointer" : "card-glass opacity-70 cursor-default"} border-white/[0.06]`}>
+
+                  {/* Status + Office */}
+                  <div className="flex items-center justify-between gap-2 mb-3">
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${STATUS_STYLES[item.status]}`}>
+                      {STATUS_LABELS[item.status]}
+                    </span>
+                    {item.office_name && (
+                      <span className="text-[10px] text-white/25 truncate">{item.office_name}</span>
+                    )}
+                  </div>
+
+                  {/* Title */}
+                  <p className="text-white font-semibold text-sm leading-snug mb-3 line-clamp-2">{item.title}</p>
+
+                  {/* Rendering progress */}
+                  {isRendering && (
+                    <div className="mb-3">
+                      <div className="flex justify-between text-xs text-white/30 mb-1">
+                        <span>{meta.render_stage ?? "gerando…"}</span>
+                        <span>{meta.render_progress ?? 0}%</span>
+                      </div>
+                      <div className="h-1 rounded-full bg-white/[0.08] overflow-hidden">
+                        <div className="h-full rounded-full bg-gradient-to-r from-violet-500 to-cyan-400 transition-all duration-500"
+                          style={{ width: `${meta.render_progress ?? 0}%` }} />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Artifacts preview */}
+                  {isReady && (
+                    <div className="flex flex-wrap gap-1.5 mb-3">
+                      {meta.roteiro && <span className="text-[10px] px-2 py-0.5 rounded-md bg-white/[0.06] text-white/40">📝 Roteiro</span>}
+                      {meta.thumbnails && meta.thumbnails.length > 0 && <span className="text-[10px] px-2 py-0.5 rounded-md bg-white/[0.06] text-white/40">🖼 {meta.thumbnails.length} thumbnails</span>}
+                      {meta.seo && <span className="text-[10px] px-2 py-0.5 rounded-md bg-white/[0.06] text-white/40">📊 SEO</span>}
+                      {meta.checklist_producao && <span className="text-[10px] px-2 py-0.5 rounded-md bg-white/[0.06] text-white/40">✅ {meta.checklist_producao.length} itens</span>}
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between text-xs text-white/25">
+                    <span>{new Date(item.created_at).toLocaleDateString("pt-BR")}</span>
+                    {item.duration_seconds && <span>⏱ {Math.round(item.duration_seconds)}s</span>}
+                    {isReady && <span className="text-violet-400/60">Ver detalhes →</span>}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </>
   );
 }

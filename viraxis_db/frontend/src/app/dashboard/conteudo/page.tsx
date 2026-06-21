@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { auth } from "@/lib/api";
 
@@ -293,7 +293,7 @@ function ContentModal({ item, onClose }: { item: ContentItem; onClose: () => voi
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
-export default function ConteudoPage() {
+function ConteudoInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const officeFilter = searchParams.get("office");
@@ -466,5 +466,13 @@ export default function ConteudoPage() {
         )}
       </div>
     </>
+  );
+}
+
+export default function ConteudoPage() {
+  return (
+    <Suspense fallback={<div className="flex items-center justify-center min-h-[60vh]"><div className="text-white/30 animate-pulse text-sm">Carregando…</div></div>}>
+      <ConteudoInner />
+    </Suspense>
   );
 }

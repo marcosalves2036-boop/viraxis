@@ -97,7 +97,7 @@ async def run_renderer(
         trend_result = await session.execute(
             select(TrendSnapshot)
             .where(TrendSnapshot.office_id == office_id)
-            .order_by(desc(TrendSnapshot.created_at))
+            .order_by(desc(TrendSnapshot.captured_at))
             .limit(1)
         )
         latest_trend: TrendSnapshot | None = trend_result.scalar_one_or_none()

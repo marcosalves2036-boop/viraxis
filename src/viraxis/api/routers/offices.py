@@ -453,7 +453,39 @@ async def _run_renderer_safe(office_id, user_id, decision_id) -> None:
         from viraxis.agents.renderer.v2_direct import run_renderer_v2
         await run_renderer_v2(office_id, user_id, decision_id)
     except Exception as e:
-        logger.error("Background RENDERER falhou | office=%s decision=%s err=%s", office_id, decision_id, e)
+        import traceback
+        err_msg = f"{type(e).__name__}: {e}\n{traceback.format_exc()[-500:]}"
+        logger.error("Background RENDERER falhou | office=%s decision=%s err=%s", office_id, decision_id, err_msg)
+        # Write error to DB so we can debug without Render logs
+        try:
+            from viraxis.infrastructure.database.session import AsyncSessionLocal
+            from viraxis.domain.models.content_item import ContentItem, ContentStatus
+            from viraxis.domain.models.content_decision import ContentDecision, DecisionStatus
+            from sqlalchemy import select, update as sa_update
+            async with AsyncSessionLocal() as s:
+                # Find the content_item for this decision
+                r = await s.execute(
+                    select(ContentItem).where(
+                        ContentItem.decision_id == decision_id,
+                        ContentItem.status == ContentStatus.rendering,
+                    ).order_by(ContentItem.created_at.desc()).limit(1)
+                )
+                item = r.scalar_one_or_none()
+                if item:
+                    item.status = ContentStatus.failed
+                    item.production_meta = {
+                        "render_progress": 0,
+                        "render_stage": "falhou",
+                        "error": err_msg[:800],
+                    }
+                await s.execute(
+                    sa_update(ContentDecision)
+                    .where(ContentDecision.id == decision_id)
+                    .values(status=DecisionStatus.failed)
+                )
+                await s.commit()
+        except Exception as db_err:
+            logger.error("Falha ao gravar erro no DB: %s", db_err)
 
 @router.patch("/{office_id}/decisions/{decision_id}/status", response_model=DecisionResponse)
 async def update_decision_status(

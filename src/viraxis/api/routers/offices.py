@@ -448,11 +448,11 @@ async def get_decision(
 
 
 
-async def _run_renderer_safe(office_id, user_id, decision_id) -> None:
+async def _run_renderer_safe(office_id, user_id, decision_id, extra_instructions=None) -> None:
     """Executa o RENDERER v2 em background sem propagar exceções."""
     try:
         from viraxis.agents.renderer.v2_direct import run_renderer_v2
-        await run_renderer_v2(office_id, user_id, decision_id)
+        await run_renderer_v2(office_id, user_id, decision_id, extra_instructions=extra_instructions)
     except Exception as e:
         import traceback
         err_msg = f"{type(e).__name__}: {e}\n{traceback.format_exc()[-500:]}"

@@ -58,6 +58,48 @@ app.include_router(users.router)
 app.include_router(dev.router)
 
 
+
+import asyncio
+import logging
+
+_startup_logger = logging.getLogger("viraxis.startup")
+
+async def _recover_stuck_decisions() -> None:
+    """Re-dispara decisões presas em 'approved' após restart do servidor."""
+    await asyncio.sleep(5)  # aguarda DB connections estabilizarem
+    try:
+        from sqlalchemy import select
+        from viraxis.domain.models.content_decision import ContentDecision, DecisionStatus
+        from viraxis.infrastructure.database.session import AsyncSessionLocal
+        from viraxis.api.routers.offices import _run_renderer_safe
+
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(ContentDecision).where(ContentDecision.status == DecisionStatus.approved)
+            )
+            stuck = result.scalars().all()
+
+        if stuck:
+            _startup_logger.warning("Startup recovery: %d decisão(ões) presa(s) em 'approved' — re-disparando renderer", len(stuck))
+            for dec in stuck:
+                asyncio.create_task(
+                    _run_renderer_safe(
+                        office_id=dec.office_id,
+                        user_id=dec.user_id,
+                        decision_id=dec.id,
+                        extra_instructions=dec.extra_instructions,
+                    )
+                )
+        else:
+            _startup_logger.info("Startup recovery: nenhuma decisão presa.")
+    except Exception as e:
+        _startup_logger.error("Startup recovery falhou: %s", e)
+
+
+@app.on_event("startup")
+async def startup_event() -> None:
+    asyncio.create_task(_recover_stuck_decisions())
+
 # Health
 @app.get("/health", tags=["infra"])
 async def health() -> dict:

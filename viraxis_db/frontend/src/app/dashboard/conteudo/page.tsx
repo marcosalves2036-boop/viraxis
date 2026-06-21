@@ -44,14 +44,15 @@ interface Office { id: string; name: string; }
 const STATUS_STYLES: Record<string, string> = {
   draft:     "bg-white/10 text-white/50",
   rendering: "bg-blue-500/15 text-blue-400",
+  review:    "bg-amber-500/15 text-amber-400",
   ready:     "bg-emerald-500/15 text-emerald-400",
   published: "bg-violet-500/15 text-violet-400",
   failed:    "bg-red-500/15 text-red-400",
 };
 
 const STATUS_LABELS: Record<string, string> = {
-  draft: "Rascunho", rendering: "⚙ Gerando…", ready: "✅ Pronto",
-  published: "🚀 Publicado", failed: "❌ Falhou",
+  draft: "Rascunho", rendering: "⚙ Gerando…", review: "👁 Aguardando revisão",
+  ready: "✅ Pronto", published: "🚀 Publicado", failed: "❌ Falhou",
 };
 
 // ── Content Detail Modal ──────────────────────────────────────────────────────
@@ -376,7 +377,24 @@ function ConteudoInner() {
     setItems(prev => prev.filter(i => i.id !== itemId));
   }
 
+  async function approveItem(itemId: string, officeId: string) {
+    if (!officeId) return;
+    const r = await fetch(`/api/offices/${officeId}/content/${itemId}/approve`, {
+      method: "PATCH", headers,
+    });
+    if (r.ok) setItems(prev => prev.map(i => i.id === itemId ? { ...i, status: "ready" } : i));
+  }
+
+  async function rejectItem(itemId: string, officeId: string) {
+    if (!officeId) return;
+    const r = await fetch(`/api/offices/${officeId}/content/${itemId}/reject`, {
+      method: "PATCH", headers,
+    });
+    if (r.ok) setItems(prev => prev.filter(i => i.id !== itemId));
+  }
+
   const ready = items.filter(i => i.status === "ready" || i.status === "published");
+  const review = items.filter(i => i.status === "review");
   const rendering = items.filter(i => i.status === "rendering");
   const failed = items.filter(i => i.status === "failed");
 
@@ -446,11 +464,12 @@ function ConteudoInner() {
             {items.map(item => {
               const meta = item.production_meta;
               const isReady = item.status === "ready" || item.status === "published";
+              const isReview = item.status === "review";
               const isRendering = item.status === "rendering";
 
               return (
                 <div key={item.id}
-                  className={`relative text-left p-5 rounded-2xl border transition-all ${isReady ? "card-glass hover:border-violet-500/30" : "card-glass opacity-70"} border-white/[0.06]`}>
+                  className={`relative text-left p-5 rounded-2xl border transition-all ${isReady ? "card-glass hover:border-violet-500/30" : isReview ? "card-glass hover:border-amber-500/30" : "card-glass opacity-70"} border-white/[0.06]`}>
 
                   {/* Status + Office + Delete */}
                   <div className="flex items-center justify-between gap-2 mb-3">
@@ -470,7 +489,7 @@ function ConteudoInner() {
                   </div>
 
                   {/* Title */}
-                  <p onClick={() => isReady && setSelectedItem(item)} className={`text-white font-semibold text-sm leading-snug mb-3 line-clamp-2 ${isReady ? "cursor-pointer hover:text-violet-200 transition-colors" : ""}`}>{item.title}</p>
+                  <p onClick={() => (isReady || isReview) && setSelectedItem(item)} className={`text-white font-semibold text-sm leading-snug mb-3 line-clamp-2 ${(isReady || isReview) ? "cursor-pointer hover:text-violet-200 transition-colors" : ""}`}>{item.title}</p>
 
                   {/* Rendering progress */}
                   {isRendering && (
@@ -482,6 +501,23 @@ function ConteudoInner() {
                       <div className="h-1 rounded-full bg-white/[0.08] overflow-hidden">
                         <div className="h-full rounded-full bg-gradient-to-r from-violet-500 to-cyan-400 transition-all duration-500"
                           style={{ width: `${meta.render_progress ?? 0}%` }} />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Review actions */}
+                  {isReview && (
+                    <div className="mb-3 p-3 rounded-xl border border-amber-500/20 bg-amber-500/5">
+                      <p className="text-amber-400 text-xs font-semibold mb-2">👁 Roteiro aguardando sua aprovação</p>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={e => { e.stopPropagation(); approveItem(item.id, item.office_id ?? ""); }}
+                          className="flex-1 py-1.5 bg-emerald-600/80 hover:bg-emerald-500 text-white text-xs font-bold rounded-lg transition-colors"
+                        >✅ Aprovar roteiro</button>
+                        <button
+                          onClick={e => { e.stopPropagation(); rejectItem(item.id, item.office_id ?? ""); }}
+                          className="flex-1 py-1.5 bg-red-900/60 hover:bg-red-800/60 text-white text-xs font-bold rounded-lg transition-colors"
+                        >🔄 Rejeitar</button>
                       </div>
                     </div>
                   )}
@@ -499,9 +535,9 @@ function ConteudoInner() {
                   <div className="flex items-center justify-between text-xs text-white/25">
                     <span>{new Date(item.created_at).toLocaleDateString("pt-BR")}</span>
                     {item.duration_seconds && <span>⏱ {Math.round(item.duration_seconds)}s</span>}
-                    {isReady && (
+                    {(isReady || isReview) && (
                       <button onClick={() => setSelectedItem(item)} className="text-violet-400/60 hover:text-violet-300 transition-colors">
-                        Ver detalhes →
+                        Ver roteiro →
                       </button>
                     )}
                   </div>

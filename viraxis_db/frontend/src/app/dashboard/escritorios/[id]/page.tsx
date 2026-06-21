@@ -80,6 +80,7 @@ function DecisionModal({
   onViewContent: (itemId: string) => void;
 }) {
   const [loading, setLoading] = useState<string | null>(null);
+  const [extraInstructions, setExtraInstructions] = useState("");
   const token = typeof window !== "undefined" ? localStorage.getItem("viraxis_token") : null;
 
   async function patchStatus(newStatus: string) {
@@ -88,7 +89,7 @@ function DecisionModal({
       const r = await fetch(`/api/offices/${officeId}/decisions/${decision.id}`, {
         method: "PATCH",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ status: newStatus }),
+        body: JSON.stringify({ status: newStatus, extra_instructions: extraInstructions || null }),
       });
       if (r.ok) { onStatusChange(await r.json()); onClose(); }
     } finally { setLoading(null); }
@@ -206,6 +207,21 @@ function DecisionModal({
             </div>
           )}
         </div>
+
+        {/* Extra instructions textarea (only when pending) */}
+        {decision.status === "pending" && (
+          <div className="px-6 pb-3">
+            <p className="text-xs font-semibold text-white/40 uppercase tracking-wider mb-2">Instruções adicionais para o roteiro <span className="text-white/20 font-normal normal-case">(opcional)</span></p>
+            <textarea
+              value={extraInstructions}
+              onChange={e => setExtraInstructions(e.target.value)}
+              placeholder="Ex: foca em linguagem para crianças de 8 a 12 anos, tom divertido e use exemplos do cotidiano..."
+              rows={3}
+              className="w-full rounded-xl border px-3 py-2 text-sm text-white/80 placeholder-white/20 resize-none focus:outline-none focus:border-violet-500/50"
+              style={{ background: "rgba(255,255,255,0.04)", borderColor: "rgba(255,255,255,0.08)" }}
+            />
+          </div>
+        )}
 
         {/* Action buttons */}
         <div className="px-6 pb-6 flex gap-3 flex-wrap">

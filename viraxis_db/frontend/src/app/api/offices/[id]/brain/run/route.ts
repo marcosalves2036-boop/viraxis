@@ -1,14 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-
 const API = process.env.BACKEND_URL || "https://viraxis.onrender.com";
 
 export async function POST(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
+  const { id } = await params;
   const token = req.headers.get("authorization") ?? "";
   try {
-    const res = await fetch(`${API}/offices/${params.id}/brain/run`, {
+    const res = await fetch(`${API}/offices/${id}/brain/run`, {
       method: "POST",
       headers: { Authorization: token },
     });

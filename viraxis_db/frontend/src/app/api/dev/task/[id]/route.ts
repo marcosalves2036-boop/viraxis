@@ -3,11 +3,12 @@ const API = process.env.BACKEND_URL || "https://viraxis.onrender.com";
 
 export async function GET(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
+  const { id } = await params;
   const token = req.headers.get("authorization") ?? "";
   try {
-    const res = await fetch(`${API}/dev/task/${params.id}`, {
+    const res = await fetch(`${API}/dev/task/${id}`, {
       headers: { Authorization: token },
     });
     const text = await res.text();

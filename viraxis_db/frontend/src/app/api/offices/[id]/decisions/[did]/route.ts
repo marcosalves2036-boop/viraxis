@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 const API = process.env.BACKEND_URL || "https://viraxis.onrender.com";
 
-type Params = { params: { id: string; did: string } };
+type Params = { params: Promise<{ id: string; did: string }> };
 
 export async function GET(req: NextRequest, { params }: Params) {
+  const { id, did } = await params;
   const token = req.headers.get("authorization") ?? "";
   try {
-    const res = await fetch(`${API}/offices/${params.id}/decisions/${params.did}`, {
+    const res = await fetch(`${API}/offices/${id}/decisions/${did}`, {
       headers: { Authorization: token },
     });
     const text = await res.text();
@@ -18,10 +19,11 @@ export async function GET(req: NextRequest, { params }: Params) {
 }
 
 export async function PATCH(req: NextRequest, { params }: Params) {
+  const { id, did } = await params;
   const token = req.headers.get("authorization") ?? "";
   const body = await req.text();
   try {
-    const res = await fetch(`${API}/offices/${params.id}/decisions/${params.did}/status`, {
+    const res = await fetch(`${API}/offices/${id}/decisions/${did}/status`, {
       method: "PATCH",
       headers: { Authorization: token, "Content-Type": "application/json" },
       body,

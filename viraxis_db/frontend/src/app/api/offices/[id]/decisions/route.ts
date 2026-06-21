@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 const API = process.env.BACKEND_URL || "https://viraxis.onrender.com";
 
-export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const token = req.headers.get("authorization") ?? "";
   const qs = req.nextUrl.searchParams.toString();
-  const url = `${API}/offices/${params.id}/decisions${qs ? `?${qs}` : ""}`;
+  const url = `${API}/offices/${id}/decisions${qs ? `?${qs}` : ""}`;
   try {
     const res = await fetch(url, { headers: { Authorization: token } });
     const text = await res.text();

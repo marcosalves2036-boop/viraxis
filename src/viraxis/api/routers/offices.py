@@ -517,11 +517,18 @@ async def update_decision_status(
     # Persist extra_instructions so renderer can read from DB (not just memory)
     if body.extra_instructions is not None:
         decision.extra_instructions = body.extra_instructions
+
+    # Se aprovada: já marca como "executing" imediatamente no commit,
+    # sem depender de background task para mudar o status.
+    # Isso permite que o startup recovery detecte e retome se o processo reiniciar.
+    if body.status == "approved":
+        decision.status = DecisionStatus.executing
+
     session.add(decision)
     await session.commit()
     await session.refresh(decision)
 
-    # Auto-trigger RENDERER quando aprovada
+    # Dispara RENDERER em background
     if body.status == "approved":
         background_tasks.add_task(
             _run_renderer_safe,

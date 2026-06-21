@@ -88,17 +88,35 @@ async def _recover_stuck_decisions() -> None:
         from viraxis.domain.models.content_decision import ContentDecision, DecisionStatus
         from viraxis.infrastructure.database.session import AsyncSessionLocal
 
+        # Detecta decisões em "executing" sem content_item ativo (renderer nunca rodou ou crashou antes do item ser criado)
+        from viraxis.domain.models.content_item import ContentItem, ContentStatus
         async with AsyncSessionLocal() as session:
             result = await session.execute(
-                select(ContentDecision).where(ContentDecision.status == DecisionStatus.approved)
+                select(ContentDecision).where(
+                    ContentDecision.status.in_([DecisionStatus.approved, DecisionStatus.executing])
+                )
             )
-            stuck = result.scalars().all()
+            candidates = result.scalars().all()
+
+        # Filtra apenas os que não têm item ativo em rendering/review/ready
+        stuck = []
+        async with AsyncSessionLocal() as session:
+            for dec in candidates:
+                item_result = await session.execute(
+                    select(ContentItem).where(
+                        ContentItem.decision_id == dec.id,
+                        ContentItem.deleted_at.is_(None),
+                        ContentItem.status.in_([ContentStatus.rendering, ContentStatus.review, ContentStatus.ready]),
+                    ).limit(1)
+                )
+                if item_result.scalar_one_or_none() is None:
+                    stuck.append(dec)
 
         if not stuck:
             _startup_logger.info("Startup recovery: nenhuma decisão presa.")
             return
 
-        _startup_logger.warning("Startup recovery: %d decisão(ões) presas em 'approved' — re-disparando", len(stuck))
+        _startup_logger.warning("Startup recovery: %d decisão(ões) presas — re-disparando", len(stuck))
         await asyncio.gather(*[_recover_one(dec) for dec in stuck], return_exceptions=True)
 
     except Exception as e:

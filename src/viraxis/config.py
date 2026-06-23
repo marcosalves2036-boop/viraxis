@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------ #
     # Banco de dados                                                      #
     # ------------------------------------------------------------------ #
+    # DATABASE_URL (full URL — Render/Neon/etc.)
+    database_url: str = Field(default="", alias="DATABASE_URL")
+
+    # Componentes individuais (fallback / dev local)
     postgres_user: str = "viraxis"
     postgres_password: str = "viraxis_dev"
     postgres_db: str = "viraxis"
@@ -36,6 +40,15 @@ class Settings(BaseSettings):
     @property
     def database_url_async(self) -> str:
         """URL para o driver asyncpg (SQLAlchemy async)."""
+        if self.database_url:
+            url = self.database_url
+            # Converter para asyncpg (postgres:// ou postgresql://)
+            if url.startswith("postgres://"):
+                url = "postgresql+asyncpg://" + url[len("postgres://"):]
+            elif url.startswith("postgresql://"):
+                url = "postgresql+asyncpg://" + url[len("postgresql://"):]
+            return url
+        # Fallback: componentes individuais (dev local)
         u = self.postgres_user
         p = self.postgres_password
         h = self.postgres_host
@@ -47,6 +60,16 @@ class Settings(BaseSettings):
     @property
     def database_url_sync(self) -> str:
         """URL para o driver psycopg2 (Alembic CLI)."""
+        if self.database_url:
+            url = self.database_url
+            if url.startswith("postgres://"):
+                url = "postgresql+psycopg2://" + url[len("postgres://"):]
+            elif url.startswith("postgresql://"):
+                url = "postgresql+psycopg2://" + url[len("postgresql://"):]
+            # Remover sslmode do sync URL (psycopg2 aceita connect_args)
+            import re
+            url = re.sub(r'[?&]sslmode=[^&]*', '', url)
+            return url
         u = self.postgres_user
         p = self.postgres_password
         h = self.postgres_host

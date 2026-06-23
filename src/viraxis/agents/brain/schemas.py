@@ -11,6 +11,15 @@ from viraxis.domain.models.niche_profile import NicheProfile
 # Input — contexto do nicho que o BRAIN recebe                       #
 # ------------------------------------------------------------------ #
 
+class RawVideoContext(BaseModel):
+    """Representação resumida de um vídeo bruto para o BRAIN."""
+    id: str
+    title: str
+    duration_seconds: float | None = None
+    tags: list[str] = []
+    description: str | None = None
+
+
 class BrainDecisionInput(BaseModel):
     """Contexto serializado do NicheProfile para o agente processar."""
 
@@ -21,9 +30,18 @@ class BrainDecisionInput(BaseModel):
     top_keywords: list[str]
     brain_params: dict
     raw_notes: str | None = None
+    # v2: vídeos brutos disponíveis no escritório
+    available_raw_videos: list[RawVideoContext] = Field(
+        default_factory=list,
+        description="Vídeos brutos disponíveis que o BRAIN pode referenciar na decisão.",
+    )
 
     @classmethod
-    def from_niche_profile(cls, profile: NicheProfile) -> "BrainDecisionInput":
+    def from_niche_profile(
+        cls,
+        profile: NicheProfile,
+        raw_videos: list[RawVideoContext] | None = None,
+    ) -> "BrainDecisionInput":
         """Constrói o input a partir de um NicheProfile ORM."""
         return cls(
             niche_name=profile.niche_name,
@@ -33,6 +51,7 @@ class BrainDecisionInput(BaseModel):
             top_keywords=profile.top_keywords or [],
             brain_params=profile.brain_params or {},
             raw_notes=profile.raw_notes,
+            available_raw_videos=raw_videos or [],
         )
 
     def to_context_string(self) -> str:
@@ -55,6 +74,18 @@ class BrainDecisionInput(BaseModel):
         )
         notes_str = self.raw_notes or "nenhuma nota adicional"
 
+        # v2: contexto de vídeos brutos
+        if self.available_raw_videos:
+            videos_lines = []
+            for v in self.available_raw_videos:
+                dur = f"{v.duration_seconds:.0f}s" if v.duration_seconds else "duração desconhecida"
+                tags = ", ".join(v.tags) if v.tags else "sem tags"
+                desc = f" — {v.description}" if v.description else ""
+                videos_lines.append(f"  • [{v.id[:8]}] {v.title} ({dur}) tags: {tags}{desc}")
+            videos_str = "\n".join(videos_lines)
+        else:
+            videos_str = "  nenhum vídeo bruto disponível ainda"
+
         return f"""
 NICHO: {self.niche_name}
 
@@ -71,6 +102,10 @@ ESTILO EDITORIAL:
 
 NOTAS DO OPERADOR:
 {notes_str}
+
+VÍDEOS BRUTOS DISPONÍVEIS NA BIBLIOTECA:
+{videos_str}
+(Se relevante, o selected_topic pode referenciar um vídeo pelo ID para o RENDERER usar como base.)
 """.strip()
 
 
@@ -114,7 +149,11 @@ class BrainDecisionOutput(BaseModel):
 
     selected_topic: str | None = Field(
         default=None,
-        description="Tema/tópico escolhido para o conteúdo (se decision_type = content_topic).",
+        description=(
+            "Tema/tópico escolhido para o conteúdo (se decision_type = content_topic). "
+            "Se baseado em um vídeo bruto, incluir o ID do vídeo no formato: "
+            "'[video:ID_CURTO] Título do conteúdo'."
+        ),
         max_length=512,
     )
 
@@ -134,4 +173,12 @@ class BrainDecisionOutput(BaseModel):
         description="Nível de confiança na decisão, de 0.0 a 1.0.",
         ge=0.0,
         le=1.0,
+    )
+
+    raw_video_id: str | None = Field(
+        default=None,
+        description=(
+            "ID do vídeo bruto referenciado (se o BRAIN decidiu basear o conteúdo "
+            "em um vídeo da biblioteca). None se decisão é puramente temática."
+        ),
     )

@@ -23,6 +23,8 @@ from viraxis.infrastructure.database.session import AsyncSessionLocal
 from viraxis.infrastructure.repositories.agent_run_log import AgentRunLogRepository
 from viraxis.infrastructure.repositories.content_decision import ContentDecisionRepository
 from viraxis.infrastructure.repositories.niche_profile import NicheProfileRepository
+from viraxis.infrastructure.repositories.raw_video import RawVideoRepository
+from viraxis.agents.brain.schemas import RawVideoContext
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +91,27 @@ async def run_brain(
             else float(brain_params.get("temperature", 0.7))
         )
 
-        niche_input = BrainDecisionInput.from_niche_profile(niche)
+        # ---- v2: Buscar vídeos brutos disponíveis ----
+        raw_video_repo = RawVideoRepository(session)
+        ready_videos = await raw_video_repo.get_ready_by_office(office_id)
+        raw_video_contexts = [
+            RawVideoContext(
+                id=str(v.id),
+                title=v.title or v.original_filename,
+                duration_seconds=v.duration_seconds,
+                tags=v.tags or [],
+                description=v.description,
+            )
+            for v in ready_videos
+        ]
+        if raw_video_contexts:
+            logger.info(
+                "BRAIN v2: %d vídeo(s) bruto(s) disponíveis para office=%s",
+                len(raw_video_contexts),
+                office_id,
+            )
+
+        niche_input = BrainDecisionInput.from_niche_profile(niche, raw_videos=raw_video_contexts)
         logger.info(
             "BRAIN iniciando análise | office=%s | nicho=%s | temp=%.2f",
             office_id,
@@ -141,6 +163,8 @@ async def run_brain(
             selected_archetype=decision_output.selected_archetype,
             selected_platform=decision_output.selected_platform,
             confidence_score=decision_output.confidence_score,
+            # v2: referência ao vídeo bruto (se BRAIN escolheu usar um)
+            extra_instructions=f"raw_video_id:{decision_output.raw_video_id}" if decision_output.raw_video_id else None,
         )
 
         # ---- 5. Atualizar log para success ----

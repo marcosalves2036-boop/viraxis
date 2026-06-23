@@ -81,6 +81,7 @@ class ContentDecisionRepository(BaseRepository[ContentDecision]):
         selected_platform: str | None = None,
         confidence_score: float | None = None,
         status: DecisionStatus = DecisionStatus.pending,
+        extra_instructions: str | None = None,
     ) -> ContentDecision:
         """
         Atalho semântico — cria uma ContentDecision com campos nomeados.
@@ -98,4 +99,5 @@ class ContentDecisionRepository(BaseRepository[ContentDecision]):
             selected_platform=selected_platform,
             confidence_score=confidence_score,
             status=status,
+            extra_instructions=extra_instructions,
         )

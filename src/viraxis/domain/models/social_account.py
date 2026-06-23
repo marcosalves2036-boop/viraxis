@@ -17,6 +17,7 @@ class SocialPlatform(str, enum.Enum):
     instagram = "instagram"
     youtube = "youtube"
     kwai = "kwai"
+    facebook = "facebook"
 
 
 class SocialAccount(BaseModelMixin, Base):

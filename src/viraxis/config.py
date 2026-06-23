@@ -122,6 +122,35 @@ class Settings(BaseSettings):
     resend_api_key: str = Field(default="", alias="RESEND_API_KEY")
     frontend_url: str = Field(default="https://viraxis.com.br", alias="FRONTEND_URL")
 
+
+    # ------------------------------------------------------------------ #
+    # OAuth — Social Platforms                                            #
+    # ------------------------------------------------------------------ #
+    # Google / YouTube
+    google_oauth_client_id: str = Field(default="", alias="GOOGLE_OAUTH_CLIENT_ID")
+    google_oauth_client_secret: str = Field(default="", alias="GOOGLE_OAUTH_CLIENT_SECRET")
+    google_oauth_redirect_uri: str = Field(
+        default="https://viraxis.onrender.com/auth/google/callback",
+        alias="GOOGLE_OAUTH_REDIRECT_URI",
+    )
+
+    # TikTok
+    tiktok_client_key: str = Field(default="", alias="TIKTOK_CLIENT_KEY")
+    tiktok_client_secret: str = Field(default="", alias="TIKTOK_CLIENT_SECRET")
+    tiktok_redirect_uri: str = Field(
+        default="https://viraxis.onrender.com/auth/tiktok/callback",
+        alias="TIKTOK_REDIRECT_URI",
+    )
+
+    # Meta (Facebook / Instagram)
+    meta_app_id: str = Field(default="", alias="META_APP_ID")
+    meta_app_secret: str = Field(default="", alias="META_APP_SECRET")
+    meta_redirect_uri: str = Field(
+        default="https://viraxis.onrender.com/auth/meta/callback",
+        alias="META_REDIRECT_URI",
+    )
+
+    # URL base do frontend (para redirects pós-OAuth)
     # ------------------------------------------------------------------ #
     # Cloudflare R2                                                       #
     # ------------------------------------------------------------------ #

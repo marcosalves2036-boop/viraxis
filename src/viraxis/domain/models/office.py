@@ -56,3 +56,6 @@ class Office(BaseModelMixin, Base):
     social_accounts: Mapped[list["SocialAccount"]] = relationship(  # type: ignore[name-defined]  # noqa: F821
         "SocialAccount", back_populates="office", lazy="raise"
     )
+    raw_videos: Mapped[list["RawVideo"]] = relationship(  # type: ignore[name-defined]  # noqa: F821
+        "RawVideo", back_populates="office", lazy="raise"
+    )

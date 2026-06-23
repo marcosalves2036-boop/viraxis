@@ -19,10 +19,10 @@ from pydantic import BaseModel, Field
 # ---------------------------------------------------------------------------
 
 def _project_root() -> Path:
-    root = os.environ.get(
-        "VIRAXIS_PROJECT_ROOT",
-        str(Path(__file__).resolve().parents[7]),  # fallback: sobe 7 níveis
-    )
+    root = os.environ.get("VIRAXIS_PROJECT_ROOT")
+    if root is None:
+        # Fallback: sobe até a raiz do repo (5 níveis acima de file_tools.py)
+        root = str(Path(__file__).resolve().parents[4])
     return Path(root)
 
 

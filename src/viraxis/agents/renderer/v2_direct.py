@@ -155,7 +155,7 @@ async def run_renderer_v2(
     litellm.set_verbose = False
 
     settings = get_settings()
-    model = settings.renderer_llm_model  # groq/llama-3.3-70b-versatile
+    model = settings.llm_model  # groq/llama-3.3-70b-versatile
     api_key = settings.llm_api_key
 
     # 1. Carregar decisão + contexto

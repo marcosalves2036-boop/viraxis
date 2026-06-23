@@ -41,6 +41,10 @@ class User(BaseModelMixin, Base):
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default="true"
     )
+    is_verified: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false",
+        comment="True após o usuário clicar no link de verificação de email.",
+    )
     role: Mapped[UserRole] = mapped_column(
         Enum(UserRole, name="userrole", create_constraint=True),
         nullable=False,

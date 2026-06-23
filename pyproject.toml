@@ -12,7 +12,6 @@ dependencies = [
     "fastapi>=0.111.0",
     "uvicorn[standard]>=0.30.0",
     "pydantic>=2.7.0",
-    "email-validator>=2.0",
     "pydantic-settings>=2.3.0",
 
     # Database
@@ -48,6 +47,8 @@ dependencies = [
     "cryptography>=42.0.0",    # Fernet para tokens OAuth
     "passlib[bcrypt]>=1.7.4",  # Hash de senhas
     "python-jose[cryptography]>=3.3.0",  # JWT
+    "httpx>=0.27.0",                      # HTTP client para Resend API
+    "email-validator>=2.0",               # Validação de EmailStr (Pydantic)
 ]
 
 [project.optional-dependencies]
@@ -94,8 +95,4 @@ python_functions = ["test_*"]
 
 # ------------------------------------------------------------------ #
 # Mypy                                                                #
-# ------------------------------------------------------------------ #
-[tool.mypy]
-python_version = "3.11"
-strict = false
-ignore_missing_imports = true
+#

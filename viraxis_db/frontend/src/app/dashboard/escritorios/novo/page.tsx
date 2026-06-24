@@ -84,7 +84,7 @@ export default function NovoEscritorioPage() {
       </div>
 
       <div className="card-glass rounded-2xl p-6 space-y-6">
-        {/* Step 1: básico */}
+        {/* Step 1 */}
         {step === 1 && (
           <>
             <h2 className="font-bold text-white">1. Informações básicas</h2>
@@ -128,7 +128,7 @@ export default function NovoEscritorioPage() {
           </>
         )}
 
-        {/* Step 2: plataformas */}
+        {/* Step 2 */}
         {step === 2 && (
           <>
             <h2 className="font-bold text-white">2. Plataformas alvo</h2>
@@ -164,7 +164,7 @@ export default function NovoEscritorioPage() {
           </>
         )}
 
-        {/* Step 3: estilo */}
+        {/* Step 3 */}
         {step === 3 && (
           <>
             <h2 className="font-bold text-white">3. Estilo de conteúdo</h2>
@@ -233,4 +233,6 @@ export default function NovoEscritorioPage() {
           )}
         </div>
       </div>
-  
+    </div>
+  );
+}

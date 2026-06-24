@@ -49,4 +49,14 @@ export const auth = {
   save: (token: TokenResponse) => {
     localStorage.setItem("viraxis_token", token.access_token);
     localStorage.setItem("viraxis_user", JSON.stringify({
-      id:
+      id: token.user_id,
+      email: token.email,
+      full_name: token.full_name,
+    }));
+  },
+  clear: () => {
+    localStorage.removeItem("viraxis_token");
+    localStorage.removeItem("viraxis_user");
+  },
+  getToken: () => localStorage.getItem("viraxis_token"),
+};

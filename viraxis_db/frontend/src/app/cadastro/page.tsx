@@ -35,14 +35,12 @@ export default function CadastroPage() {
       <div className="hero-glow w-[500px] h-[500px] bg-violet-700" style={{ top: "20%", left: "50%", transform: "translateX(-50%)" }} />
 
       <div className="relative z-10 w-full max-w-md">
-        {/* Logo */}
         <div className="text-center mb-8">
           <Link href="/" className="text-2xl font-black gradient-text">VIRAXIS</Link>
           <p className="text-white/40 text-sm mt-2">Crie seu escritório viral grátis</p>
         </div>
 
         {success ? (
-          /* ── Tela de sucesso / verificação ── */
           <div className="card-glass rounded-2xl p-8 text-center">
             <div className="text-5xl mb-4">📧</div>
             <h1 className="text-xl font-bold mb-3">Verifique seu email</h1>
@@ -76,7 +74,6 @@ export default function CadastroPage() {
             </Link>
           </div>
         ) : (
-          /* ── Formulário de cadastro ── */
           <div className="card-glass rounded-2xl p-8">
             <h1 className="text-xl font-bold mb-6">Criar conta</h1>
 
@@ -110,4 +107,42 @@ export default function CadastroPage() {
                 <input
                   type="password"
                   required
-            
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="Mínimo 8 caracteres"
+                  className="w-full bg-white/[0.06] border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder-white/20 focus:outline-none focus:border-violet-500/60 transition-colors"
+                />
+              </div>
+
+              {error && (
+                <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3 text-sm text-red-300">
+                  {error}
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full py-3 bg-violet-600 hover:bg-violet-500 disabled:bg-violet-800 disabled:cursor-not-allowed text-white font-semibold rounded-xl transition-colors"
+              >
+                {loading ? "Criando conta..." : "Criar conta grátis"}
+              </button>
+            </form>
+
+            <p className="text-center text-xs text-white/25 mt-4">
+              Ao criar uma conta você concorda com nossos{" "}
+              <Link href="#" className="text-white/40 hover:text-white/60">Termos de Uso</Link>
+            </p>
+
+            <p className="text-center text-sm text-white/40 mt-4">
+              Já tem conta?{" "}
+              <Link href="/login" className="text-violet-400 hover:text-violet-300 transition-colors">
+                Entrar
+              </Link>
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

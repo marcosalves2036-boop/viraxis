@@ -8,6 +8,10 @@ export interface TokenResponse {
   full_name: string;
 }
 
+export interface MessageResponse {
+  message: string;
+}
+
 export interface ApiError {
   detail: string;
 }
@@ -28,7 +32,13 @@ async function post<T>(path: string, body: unknown): Promise<T> {
 
 export const api = {
   register: (email: string, password: string, full_name: string) =>
-    post<TokenResponse>("/auth/register", { email, password, full_name }),
+    post<MessageResponse>("/auth/register", { email, password, full_name }),
+
+  verifyEmail: (token: string) =>
+    post<MessageResponse>("/auth/verify-email", { token }),
+
+  resendVerification: (email: string) =>
+    post<MessageResponse>("/auth/resend-verification", { email }),
 
   login: (email: string, password: string) =>
     post<TokenResponse>("/auth/login", { email, password }),
@@ -39,14 +49,4 @@ export const auth = {
   save: (token: TokenResponse) => {
     localStorage.setItem("viraxis_token", token.access_token);
     localStorage.setItem("viraxis_user", JSON.stringify({
-      id: token.user_id,
-      email: token.email,
-      full_name: token.full_name,
-    }));
-  },
-  clear: () => {
-    localStorage.removeItem("viraxis_token");
-    localStorage.removeItem("viraxis_user");
-  },
-  getToken: () => localStorage.getItem("viraxis_token"),
-};
+      id:

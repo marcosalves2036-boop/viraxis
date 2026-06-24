@@ -120,6 +120,16 @@ class ResetPasswordRequest(BaseModel):
 @router.post("/register", response_model=MessageResponse, status_code=status.HTTP_201_CREATED)
 async def register(body: RegisterRequest, session: AsyncSession = Depends(get_session)):
     """Cria conta e envia email de verificação. Login só permitido após verificar."""
+    import traceback as _tb
+    try:
+        return await _register_impl(body, session)
+    except HTTPException:
+        raise
+    except Exception as _e:
+        logger.error("REGISTER UNHANDLED EXCEPTION: %s\n%s", _e, _tb.format_exc())
+        raise HTTPException(status_code=500, detail=f"DEBUG: {type(_e).__name__}: {_e}\n{_tb.format_exc()}")
+
+async def _register_impl(body: RegisterRequest, session: AsyncSession):
     repo = UserRepository(session)
 
     existing = await repo.get_by_email(body.email)

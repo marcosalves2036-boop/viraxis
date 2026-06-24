@@ -9,6 +9,7 @@ from viraxis.domain.models.trend_snapshot import TrendSnapshot
 from viraxis.domain.models.social_account import SocialAccount
 from viraxis.domain.models.performance_metric import PerformanceMetric
 from viraxis.domain.models.agent_run_log import AgentRunLog
+from viraxis.domain.models.raw_video import RawVideo
 
 __all__ = [
     "User",
@@ -20,4 +21,5 @@ __all__ = [
     "SocialAccount",
     "PerformanceMetric",
     "AgentRunLog",
+    "RawVideo",
 ]

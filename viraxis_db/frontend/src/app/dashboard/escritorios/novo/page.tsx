@@ -58,7 +58,7 @@ export default function NovoEscritorioPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail ?? "Erro ao criar escritório");
-      router.push("/dashboard/escritorios");
+      router.push(`/dashboard/canais?office_id=${data.id}`);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Erro desconhecido");
     } finally {
@@ -233,6 +233,4 @@ export default function NovoEscritorioPage() {
           )}
         </div>
       </div>
-    </div>
-  );
-}
+  

@@ -8,8 +8,6 @@ Fluxo:
 """
 
 import hashlib
-import hmac
-import json
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -70,10 +68,12 @@ def _verify_access_token(access_token: str) -> str:
         raise HTTPException(status_code=401, detail="Token de acesso inválido")
 
 
-def _frontend_redirect(status: str, platform: str, message: str = "") -> RedirectResponse:
-    params = {"platform": platform, "status": status}
+def _frontend_redirect(status: str, platform: str, message: str = "", office_id: str | None = None) -> RedirectResponse:
+    params: dict = {"platform": platform, "status": status}
     if message:
         params["message"] = message
+    if office_id:
+        params["office_id"] = office_id
     return RedirectResponse(url=f"{settings.frontend_url}/oauth/callback?{urlencode(params)}")
 
 
@@ -128,7 +128,6 @@ async def google_callback(
     office_id = state_data.get("office_id")
 
     async with httpx.AsyncClient(timeout=15) as client:
-        # Trocar code por tokens
         token_resp = await client.post(GOOGLE_TOKEN_URL, data={
             "code": code,
             "client_id": settings.google_oauth_client_id,
@@ -138,7 +137,7 @@ async def google_callback(
         })
         if token_resp.status_code != 200:
             logger.error("Google token exchange failed: %s", token_resp.text)
-            return _frontend_redirect("error", "google", "token_exchange_failed")
+            return _frontend_redirect("error", "google", "token_exchange_failed", office_id)
 
         tokens = token_resp.json()
         access_token = tokens["access_token"]
@@ -166,7 +165,6 @@ async def google_callback(
             platform_user_id = info.get("id", "")
             platform_username = info.get("name", info.get("email", "youtube_user"))
 
-    # Criptografar e salvar
     access_enc = _encrypt_token(access_token)
     refresh_enc = _encrypt_token(tokens["refresh_token"]) if tokens.get("refresh_token") else None
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=tokens.get("expires_in", 3600))
@@ -199,7 +197,7 @@ async def google_callback(
 
     await session.commit()
     logger.info("YouTube conectado: user=%s channel=%s", user_id, platform_username)
-    return _frontend_redirect("success", "youtube")
+    return _frontend_redirect("success", "youtube", office_id=office_id)
 
 
 # ─── TikTok ───────────────────────────────────────────────────────────────────
@@ -256,13 +254,12 @@ async def tiktok_callback(
         )
         if token_resp.status_code != 200:
             logger.error("TikTok token exchange failed: %s", token_resp.text)
-            return _frontend_redirect("error", "tiktok", "token_exchange_failed")
+            return _frontend_redirect("error", "tiktok", "token_exchange_failed", office_id)
 
         token_data = token_resp.json().get("data", token_resp.json())
         access_token = token_data["access_token"]
         open_id = token_data.get("open_id", "")
 
-        # Buscar info do usuário
         user_resp = await client.get(
             TIKTOK_USER_URL,
             params={"fields": "open_id,union_id,avatar_url,display_name"},
@@ -305,7 +302,7 @@ async def tiktok_callback(
 
     await session.commit()
     logger.info("TikTok conectado: user=%s open_id=%s", user_id, open_id)
-    return _frontend_redirect("success", "tiktok")
+    return _frontend_redirect("success", "tiktok", office_id=office_id)
 
 
 # ─── Meta (Facebook / Instagram) ──────────────────────────────────────────────
@@ -350,7 +347,6 @@ async def meta_callback(
     office_id = state_data.get("office_id")
 
     async with httpx.AsyncClient(timeout=15) as client:
-        # Trocar code por token
         token_resp = await client.get(META_TOKEN_URL, params={
             "client_id": settings.meta_app_id,
             "client_secret": settings.meta_app_secret,
@@ -359,12 +355,11 @@ async def meta_callback(
         })
         if token_resp.status_code != 200:
             logger.error("Meta token exchange failed: %s", token_resp.text)
-            return _frontend_redirect("error", "meta", "token_exchange_failed")
+            return _frontend_redirect("error", "meta", "token_exchange_failed", office_id)
 
         tokens = token_resp.json()
         access_token = tokens["access_token"]
 
-        # Buscar info do usuário Facebook
         me_resp = await client.get(
             META_ME_URL,
             params={"fields": "id,name,email", "access_token": access_token},
@@ -374,7 +369,7 @@ async def meta_callback(
         fb_name = me.get("name", "facebook_user")
 
     access_enc = _encrypt_token(access_token)
-    expires_in = tokens.get("expires_in", 5183944)  # ~60 dias padrão Meta
+    expires_in = tokens.get("expires_in", 5183944)
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
 
     repo = SocialAccountRepository(session)
@@ -404,4 +399,4 @@ async def meta_callback(
 
     await session.commit()
     logger.info("Meta conectado: user=%s fb_id=%s", user_id, fb_user_id)
-    return _frontend_redirect("success", "facebook")
+    return _frontend_redirect("success", "facebook", office_id=office_id)

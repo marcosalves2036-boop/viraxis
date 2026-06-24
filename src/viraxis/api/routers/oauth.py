@@ -311,7 +311,7 @@ META_AUTH_URL = "https://www.facebook.com/v19.0/dialog/oauth"
 META_TOKEN_URL = "https://graph.facebook.com/v19.0/oauth/access_token"
 META_ME_URL = "https://graph.facebook.com/v19.0/me"
 META_IG_URL = "https://graph.facebook.com/v19.0/me/accounts"
-META_SCOPES = "public_profile,email,pages_show_list,instagram_basic,instagram_content_publish"
+META_SCOPES = "public_profile,email"
 
 
 @router.get("/meta/connect")

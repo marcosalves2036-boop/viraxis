@@ -139,6 +139,12 @@ async def register(body: RegisterRequest, session: AsyncSession = Depends(get_se
         await session.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email ja cadastrado")
 
+    # Bypass de verificação (dev/staging)
+    if settings.skip_email_verification:
+        user.is_verified = True  # type: ignore[attr-defined]
+        await session.commit()
+        return MessageResponse(message="Conta criada! Você já pode fazer login.")
+
     # Enviar email de verificação
     token = _create_purpose_token(str(user.id), user.email, _VERIFY_PURPOSE, _VERIFY_EXPIRE_HOURS)
     sent = await send_verification_email(user.email, user.full_name, token)
@@ -161,7 +167,7 @@ async def login(body: LoginRequest, session: AsyncSession = Depends(get_session)
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Conta desativada")
 
-    if not getattr(user, "is_verified", True):
+    if not settings.skip_email_verification and not getattr(user, "is_verified", True):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Email não verificado. Verifique sua caixa de entrada ou reenvie o link.",

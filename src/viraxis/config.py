@@ -120,6 +120,7 @@ class Settings(BaseSettings):
     # Email — Resend                                                      #
     # ------------------------------------------------------------------ #
     resend_api_key: str = Field(default="", alias="RESEND_API_KEY")
+    skip_email_verification: bool = Field(default=False, alias="SKIP_EMAIL_VERIFICATION")
     frontend_url: str = Field(default="https://viraxis.com.br", alias="FRONTEND_URL")
 
 

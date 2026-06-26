@@ -7,6 +7,7 @@ Fluxo:
   4. Backend  → troca code por tokens, salva SocialAccount, redireciona frontend
 """
 
+import base64
 import hashlib
 import logging
 import secrets
@@ -42,14 +43,22 @@ def _encrypt_token(token: str) -> str:
     return _get_fernet().encrypt(token.encode()).decode()
 
 
-def _create_state(user_id: str, office_id: str | None) -> str:
+def _create_state(user_id: str, office_id: str | None, code_verifier: str | None = None) -> str:
     """Cria state JWT de curta duração (10 min) para proteção CSRF."""
     expire = datetime.now(timezone.utc) + timedelta(minutes=10)
-    return jwt.encode(
-        {"sub": user_id, "office_id": office_id, "nonce": secrets.token_hex(8), "exp": expire},
-        settings.secret_key,
-        algorithm=settings.jwt_algorithm,
-    )
+    payload: dict = {"sub": user_id, "office_id": office_id, "nonce": secrets.token_hex(8), "exp": expire}
+    if code_verifier:
+        payload["cv"] = code_verifier
+    return jwt.encode(payload, settings.secret_key, algorithm=settings.jwt_algorithm)
+
+
+def _pkce_pair() -> tuple[str, str]:
+    """Gera (code_verifier, code_challenge) para PKCE."""
+    verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
+    challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode()).digest()
+    ).rstrip(b"=").decode()
+    return verifier, challenge
 
 
 def _verify_state(state: str) -> dict:
@@ -214,13 +223,16 @@ async def tiktok_connect(
     office_id: str | None = Query(None),
 ):
     user_id = _verify_access_token(access_token)
-    state = _create_state(user_id, office_id)
+    code_verifier, code_challenge = _pkce_pair()
+    state = _create_state(user_id, office_id, code_verifier)
     params = {
         "client_key": settings.tiktok_client_key,
         "redirect_uri": settings.tiktok_redirect_uri,
         "response_type": "code",
         "scope": TIKTOK_SCOPES,
         "state": state,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
     }
     return RedirectResponse(url=f"{TIKTOK_AUTH_URL}?{urlencode(params)}")
 
@@ -241,6 +253,7 @@ async def tiktok_callback(
     office_id = state_data.get("office_id")
 
     async with httpx.AsyncClient(timeout=15) as client:
+        code_verifier = state_data.get("cv", "")
         token_resp = await client.post(
             TIKTOK_TOKEN_URL,
             data={
@@ -249,6 +262,7 @@ async def tiktok_callback(
                 "code": code,
                 "grant_type": "authorization_code",
                 "redirect_uri": settings.tiktok_redirect_uri,
+                "code_verifier": code_verifier,
             },
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
@@ -311,7 +325,11 @@ META_AUTH_URL = "https://www.facebook.com/v19.0/dialog/oauth"
 META_TOKEN_URL = "https://graph.facebook.com/v19.0/oauth/access_token"
 META_ME_URL = "https://graph.facebook.com/v19.0/me"
 META_IG_URL = "https://graph.facebook.com/v19.0/me/accounts"
-META_SCOPES = "public_profile,email"
+META_SCOPES = (
+    "public_profile,email,"
+    "pages_show_list,pages_read_engagement,"
+    "instagram_basic,instagram_content_publish"
+)
 
 
 @router.get("/meta/connect")

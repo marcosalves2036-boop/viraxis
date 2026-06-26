@@ -13,6 +13,35 @@ interface Office {
   pending_decisions: number;
 }
 
+interface ScriptSection {
+  section: "hook" | "development" | "climax" | "cta";
+  content: string;
+  duration_estimate_seconds: number;
+  visual_notes?: string;
+}
+
+interface ContentItem {
+  id: string;
+  office_id: string;
+  decision_id: string | null;
+  title: string;
+  script: string;
+  status: string;
+  duration_seconds: number | null;
+  production_meta: {
+    renderer_output?: {
+      sections?: ScriptSection[];
+      platform_adaptations?: string;
+      confidence_score?: number;
+      archetype_applied?: string;
+    };
+    confidence_score?: number;
+  };
+  publication_log: { platform: string; external_id: string; published_at: string; url?: string }[];
+  created_at: string;
+  updated_at: string;
+}
+
 interface Decision {
   id: string; decision_type: string; status: string;
   content_topic: string; content_format: string;
@@ -44,6 +73,29 @@ const STATUS_LABELS: Record<string, string> = {
 };
 
 const STATUS_FILTERS = ["todos", "pending", "approved", "done", "rejected"];
+
+const ITEM_STATUS_STYLES: Record<string, string> = {
+  draft:      "bg-yellow-500/15 text-yellow-400 border-yellow-500/30",
+  rendering:  "bg-blue-500/15 text-blue-400 border-blue-500/30",
+  ready:      "bg-emerald-500/15 text-emerald-400 border-emerald-500/30",
+  published:  "bg-violet-500/15 text-violet-400 border-violet-500/30",
+  failed:     "bg-red-700/15 text-red-500 border-red-700/30",
+};
+
+const ITEM_STATUS_LABELS: Record<string, string> = {
+  draft:     "📝 Aguardando revisão",
+  rendering: "⚙️ Processando",
+  ready:     "✅ Pronto para publicar",
+  published: "🚀 Publicado",
+  failed:    "💥 Falhou",
+};
+
+const SECTION_LABELS: Record<string, { label: string; emoji: string; timing: string }> = {
+  hook:        { label: "Gancho",        emoji: "🎣", timing: "0–3s"   },
+  development: { label: "Desenvolvimento", emoji: "📈", timing: "3–20s"  },
+  climax:      { label: "Clímax",        emoji: "🔥", timing: "20–40s" },
+  cta:         { label: "CTA",           emoji: "📣", timing: "40–60s" },
+};
 
 function ConfidenceGauge({ score }: { score: number }) {
   const pct = Math.round(score * 100);
@@ -155,7 +207,7 @@ function DecisionModal({
             <div>
               <p className="text-xs font-semibold text-white/40 uppercase tracking-wider mb-2">📡 Sinais de Input</p>
               <div className="grid grid-cols-2 gap-2">
-                {signals.niche_name && (
+                {signals.niche_name != null && (
                   <div className="bg-white/[0.03] rounded-lg p-3">
                     <p className="text-white/30 text-[10px] uppercase mb-1">Nicho</p>
                     <p className="text-white/70 text-xs">{String(signals.niche_name)}</p>
@@ -223,6 +275,224 @@ function DecisionModal({
   );
 }
 
+// ── ContentItem Modal ─────────────────────────────────────────────────────────
+
+function ContentItemModal({
+  item, officeId, onClose, onStatusChange,
+}: {
+  item: ContentItem; officeId: string;
+  onClose: () => void; onStatusChange: (updated: ContentItem) => void;
+}) {
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [copyMsg, setCopyMsg] = useState(false);
+  const token = typeof window !== "undefined" ? localStorage.getItem("viraxis_token") : null;
+
+  const sections: ScriptSection[] = item.production_meta?.renderer_output?.sections ?? [];
+  const confidence = item.production_meta?.renderer_output?.confidence_score ?? item.production_meta?.confidence_score ?? null;
+  const platformAdaptations = item.production_meta?.renderer_output?.platform_adaptations;
+  const durationMin = item.duration_seconds ? Math.round(item.duration_seconds / 60 * 10) / 10 : null;
+
+  async function patchStatus(newStatus: string): Promise<ContentItem | null> {
+    const r = await fetch(`/api/offices/${officeId}/content-items/${item.id}/status`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ status: newStatus }),
+    });
+    if (!r.ok) return null;
+    return await r.json();
+  }
+
+  async function handleApprove() {
+    setActionLoading("approve");
+    try {
+      // draft → rendering → ready (two transitions — no real video rendering yet)
+      await patchStatus("rendering");
+      const updated = await patchStatus("ready");
+      if (updated) { onStatusChange(updated); onClose(); }
+    } finally { setActionLoading(null); }
+  }
+
+  async function handleReject() {
+    setActionLoading("reject");
+    try {
+      // ready → draft (re-queue for re-generation)
+      const updated = await patchStatus("draft");
+      if (updated) { onStatusChange(updated); onClose(); }
+    } finally { setActionLoading(null); }
+  }
+
+  function copyScript() {
+    navigator.clipboard.writeText(item.script).then(() => {
+      setCopyMsg(true);
+      setTimeout(() => setCopyMsg(false), 2000);
+    });
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
+      <div
+        className="relative w-full max-w-2xl max-h-[92vh] overflow-y-auto rounded-2xl border flex flex-col"
+        style={{ background: "rgba(10,11,18,0.98)", borderColor: "var(--border)" }}
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-start justify-between p-6 border-b shrink-0" style={{ borderColor: "var(--border)" }}>
+          <div className="flex-1 min-w-0 pr-4">
+            <div className="flex items-center gap-2 mb-1 flex-wrap">
+              <span className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${ITEM_STATUS_STYLES[item.status] ?? ""}`}>
+                {ITEM_STATUS_LABELS[item.status] ?? item.status}
+              </span>
+              {durationMin && (
+                <span className="text-xs text-white/30">⏱ ~{durationMin} min</span>
+              )}
+              {confidence && (
+                <span className="text-xs text-white/30">
+                  🎯 {Math.round(confidence * 100)}% confiança
+                </span>
+              )}
+            </div>
+            <h2 className="text-lg font-bold text-white leading-tight">{item.title}</h2>
+            <p className="text-white/30 text-xs mt-0.5">
+              {new Date(item.created_at).toLocaleString("pt-BR")}
+            </p>
+          </div>
+          <button onClick={onClose} className="text-white/30 hover:text-white/60 text-xl shrink-0 transition-colors">✕</button>
+        </div>
+
+        {/* Script Sections */}
+        <div className="p-6 space-y-4 flex-1 overflow-y-auto">
+          {sections.length > 0 ? (
+            <>
+              <div className="flex items-center justify-between mb-1">
+                <p className="text-xs font-semibold text-white/40 uppercase tracking-wider">📝 Roteiro por Seção</p>
+                <button onClick={copyScript} className="text-xs text-violet-400 hover:text-violet-300 transition-colors">
+                  {copyMsg ? "✓ Copiado!" : "⧉ Copiar roteiro completo"}
+                </button>
+              </div>
+              {sections.map((sec) => {
+                const meta = SECTION_LABELS[sec.section];
+                return (
+                  <div key={sec.section} className="rounded-xl border border-white/[0.08] overflow-hidden">
+                    <div className="flex items-center justify-between px-4 py-2.5 bg-white/[0.04] border-b border-white/[0.06]">
+                      <div className="flex items-center gap-2">
+                        <span>{meta?.emoji}</span>
+                        <span className="text-sm font-bold text-white">{meta?.label}</span>
+                        <span className="text-xs text-white/30">{meta?.timing}</span>
+                      </div>
+                      <span className="text-xs text-white/30">~{sec.duration_estimate_seconds}s</span>
+                    </div>
+                    <div className="px-4 py-3">
+                      <p className="text-white/80 text-sm leading-relaxed whitespace-pre-wrap">{sec.content}</p>
+                      {sec.visual_notes && (
+                        <p className="text-white/30 text-xs mt-2 italic border-t border-white/[0.05] pt-2">
+                          🎬 {sec.visual_notes}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </>
+          ) : (
+            // Fallback: show full script as plain text
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-xs font-semibold text-white/40 uppercase tracking-wider">📝 Roteiro</p>
+                <button onClick={copyScript} className="text-xs text-violet-400 hover:text-violet-300 transition-colors">
+                  {copyMsg ? "✓ Copiado!" : "⧉ Copiar"}
+                </button>
+              </div>
+              <div className="bg-white/[0.03] border border-white/[0.06] rounded-xl p-4">
+                <p className="text-white/80 text-sm leading-relaxed whitespace-pre-wrap">{item.script}</p>
+              </div>
+            </div>
+          )}
+
+          {/* Platform adaptations */}
+          {platformAdaptations && (
+            <div className="bg-white/[0.03] border border-white/[0.06] rounded-xl p-4">
+              <p className="text-xs font-semibold text-white/40 uppercase tracking-wider mb-2">🎯 Adaptações da Plataforma</p>
+              <p className="text-white/60 text-sm leading-relaxed">{platformAdaptations}</p>
+            </div>
+          )}
+
+          {/* Publication log */}
+          {item.publication_log.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold text-white/40 uppercase tracking-wider mb-2">🚀 Publicações</p>
+              <div className="space-y-2">
+                {item.publication_log.map((pub, i) => (
+                  <div key={i} className="flex items-center gap-3 text-sm">
+                    <span>{PLATFORM_ICONS[pub.platform] ?? "🌐"}</span>
+                    <span className="text-white/70 capitalize">{pub.platform}</span>
+                    <span className="text-white/30 text-xs">{new Date(pub.published_at).toLocaleString("pt-BR")}</span>
+                    {pub.url && (
+                      <a href={pub.url} target="_blank" rel="noopener noreferrer"
+                        className="text-xs text-violet-400 hover:text-violet-300 ml-auto">
+                        Ver →
+                      </a>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Actions */}
+        <div className="px-6 pb-6 pt-4 border-t flex flex-wrap gap-3 shrink-0" style={{ borderColor: "var(--border)" }}>
+          {item.status === "draft" && (
+            <>
+              <button
+                onClick={handleApprove}
+                disabled={actionLoading !== null}
+                className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-bold rounded-xl transition-colors"
+              >
+                {actionLoading === "approve" ? "⚙️ Aprovando..." : "✅ Aprovar Roteiro"}
+              </button>
+              <button
+                onClick={onClose}
+                className="px-5 py-2.5 bg-white/[0.06] hover:bg-white/[0.10] text-white/60 text-sm rounded-xl transition-colors"
+              >
+                Fechar
+              </button>
+            </>
+          )}
+          {item.status === "ready" && (
+            <>
+              <div className="flex-1 px-4 py-2.5 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-center">
+                <p className="text-emerald-400 text-xs font-semibold">Roteiro aprovado — pronto para publicar</p>
+                <p className="text-white/30 text-[10px] mt-0.5">Conecte um canal em Configurações → Canais para publicar</p>
+              </div>
+              <button
+                onClick={handleReject}
+                disabled={actionLoading !== null}
+                className="px-5 py-2.5 bg-red-600/20 border border-red-500/30 hover:bg-red-600/30 disabled:opacity-50 text-red-400 text-sm font-medium rounded-xl transition-colors"
+              >
+                {actionLoading === "reject" ? "..." : "↩ Refazer"}
+              </button>
+            </>
+          )}
+          {item.status === "published" && (
+            <div className="flex-1 px-4 py-2.5 bg-violet-500/10 border border-violet-500/30 rounded-xl text-center">
+              <p className="text-violet-400 text-xs font-semibold">🚀 Publicado em {item.publication_log.length} plataforma(s)</p>
+            </div>
+          )}
+          {(item.status !== "draft" && item.status !== "ready" && item.status !== "published") && (
+            <button
+              onClick={onClose}
+              className="flex-1 py-2.5 bg-white/[0.06] hover:bg-white/[0.10] text-white/60 text-sm rounded-xl transition-colors"
+            >
+              Fechar
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function OfficeDetailPage() {
@@ -231,11 +501,13 @@ export default function OfficeDetailPage() {
 
   const [office, setOffice] = useState<Office | null>(null);
   const [decisions, setDecisions] = useState<Decision[]>([]);
+  const [contentItems, setContentItems] = useState<ContentItem[]>([]);
   const [statusFilter, setStatusFilter] = useState("todos");
   const [selectedDecision, setSelectedDecision] = useState<Decision | null>(null);
+  const [selectedItem, setSelectedItem] = useState<ContentItem | null>(null);
   const [brainLoading, setBrainLoading] = useState(false);
   const [brainMsg, setBrainMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [pageLoading, setPageLoading] = useState(true);
 
   const token = typeof window !== "undefined" ? localStorage.getItem("viraxis_token") : null;
   const headers = { Authorization: `Bearer ${token}` };
@@ -246,65 +518,80 @@ export default function OfficeDetailPage() {
     if (r.ok) setDecisions(await r.json());
   }, [id, token]);
 
+  const loadContentItems = useCallback(async () => {
+    const r = await fetch(`/api/offices/${id}/content-items`, { headers });
+    if (r.ok) setContentItems(await r.json());
+  }, [id, token]);
+
   useEffect(() => {
     if (!auth.getToken()) { router.replace("/login"); return; }
-    (async () => {
-      setLoading(true);
-      try {
-        const r = await fetch("/api/offices", { headers });
-        if (r.ok) {
-          const list: Office[] = await r.json();
-          const found = list.find(o => o.id === id);
-          if (found) setOffice(found);
-          else router.replace("/dashboard/escritorios");
-        }
-        await loadDecisions("todos");
-      } finally { setLoading(false); }
-    })();
+    fetch(`/api/offices/${id}`, { headers })
+      .then(r => r.json())
+      .then(data => setOffice(data))
+      .catch(() => {})
+      .finally(() => setPageLoading(false));
+    loadDecisions(statusFilter);
+    loadContentItems();
   }, [id]);
-
-  useEffect(() => { loadDecisions(statusFilter); }, [statusFilter]);
-
-  async function runBrain() {
-    setBrainLoading(true); setBrainMsg(null);
-    try {
-      const r = await fetch(`/api/offices/${id}/brain/run`, {
-        method: "POST", headers: { ...headers, "Content-Type": "application/json" },
-      });
-      const data = await r.json();
-      if (r.ok) {
-        setBrainMsg({ ok: true, text: `✅ BRAIN concluiu — decisão: "${data.content_topic}" via ${data.target_platform}` });
-        await loadDecisions(statusFilter);
-      } else {
-        setBrainMsg({ ok: false, text: `❌ Erro: ${data.detail}` });
-      }
-    } catch (e) {
-      setBrainMsg({ ok: false, text: `❌ Erro de conexão: ${e}` });
-    } finally { setBrainLoading(false); }
-  }
 
   async function toggleOfficeStatus() {
     if (!office) return;
     const next = office.status === "active" ? "paused" : "active";
-    const r = await fetch(`/api/offices/${id}/status`, {
-      method: "PATCH", headers: { ...headers, "Content-Type": "application/json" },
+    const r = await fetch(`/api/offices/${id}`, {
+      method: "PATCH",
+      headers: { ...headers, "Content-Type": "application/json" },
       body: JSON.stringify({ status: next }),
     });
-    if (r.ok) {
-      const updated = await r.json();
-      setOffice(prev => prev ? { ...prev, status: updated.status } : prev);
+    if (r.ok) setOffice(await r.json());
+  }
+
+  async function runBrain() {
+    setBrainLoading(true);
+    setBrainMsg(null);
+    try {
+      const r = await fetch(`/api/offices/${id}/brain/run`, {
+        method: "POST",
+        headers,
+      });
+      const data = await r.json();
+      if (r.ok) {
+        setBrainMsg({ ok: true, text: `✅ BRAIN gerou ${data.decisions_created ?? 1} decisão(ões)!` });
+        loadDecisions(statusFilter);
+      } else {
+        setBrainMsg({ ok: false, text: data.detail ?? "Erro ao rodar o BRAIN." });
+      }
+    } catch {
+      setBrainMsg({ ok: false, text: "Erro de conexão." });
+    } finally {
+      setBrainLoading(false);
     }
   }
 
-  function handleStatusChange(updated: Decision) {
+  function handleDecisionStatusChange(updated: Decision) {
     setDecisions(prev => prev.map(d => d.id === updated.id ? updated : d));
+    setSelectedDecision(updated);
+    loadDecisions(statusFilter);
+    loadContentItems();
   }
 
-  const pendingCount = decisions.filter(d => d.status === "pending").length;
-  const approvedCount = decisions.filter(d => d.status === "approved").length;
-  const doneCount = decisions.filter(d => d.status === "done").length;
+  function handleItemStatusChange(updated: ContentItem) {
+    setContentItems(prev => prev.map(i => i.id === updated.id ? updated : i));
+  }
 
-  if (loading) {
+  function handleFilterChange(f: string) {
+    setStatusFilter(f);
+    loadDecisions(f);
+  }
+
+  const pendingCount   = decisions.filter(d => d.status === "pending").length;
+  const approvedCount  = decisions.filter(d => d.status === "approved" || d.status === "executing").length;
+  const doneCount      = decisions.filter(d => d.status === "done").length;
+
+  const draftItems     = contentItems.filter(i => i.status === "draft");
+  const readyItems     = contentItems.filter(i => i.status === "ready");
+  const publishedItems = contentItems.filter(i => i.status === "published");
+
+  if (pageLoading) {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
         <div className="text-white/30 animate-pulse text-sm">Carregando escritório...</div>
@@ -320,190 +607,226 @@ export default function OfficeDetailPage() {
     <>
       {selectedDecision && (
         <DecisionModal
-          decision={selectedDecision} officeId={id}
+          decision={selectedDecision}
+          officeId={id}
           onClose={() => setSelectedDecision(null)}
-          onStatusChange={d => { handleStatusChange(d); setSelectedDecision(null); }}
+          onStatusChange={handleDecisionStatusChange}
+        />
+      )}
+      {selectedItem && (
+        <ContentItemModal
+          item={selectedItem}
+          officeId={id}
+          onClose={() => setSelectedItem(null)}
+          onStatusChange={handleItemStatusChange}
         />
       )}
 
-      <div className="max-w-5xl mx-auto space-y-6">
-        {/* Header */}
+      <div className="max-w-5xl mx-auto space-y-6 pb-12">
+
+        {/* ── Office Header ── */}
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div>
-            <div className="flex items-center gap-2 mb-1">
-              <button onClick={() => router.back()} className="text-white/30 hover:text-white/60 text-sm transition-colors">
-                ← Voltar
-              </button>
-            </div>
-            <div className="flex items-center gap-3 flex-wrap">
-              <h1 className="text-2xl font-black text-white">{office.name}</h1>
-              <span className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${isActive ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30" : "bg-yellow-500/15 text-yellow-400 border-yellow-500/30"}`}>
+            <div className="flex items-center gap-3 mb-1">
+              <h1 className="text-2xl font-bold text-white">{office.name}</h1>
+              <span className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${
+                isActive
+                  ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
+                  : "bg-white/[0.06] text-white/40 border-white/10"
+              }`}>
                 {isActive ? "● Ativo" : "⏸ Pausado"}
               </span>
             </div>
-            <p className="text-white/40 text-sm mt-1">{office.niche}</p>
+            <p className="text-white/40 text-sm">{office.niche}</p>
           </div>
-          <div className="flex gap-2 flex-wrap">
-            <button
-              onClick={toggleOfficeStatus}
-              className={`px-4 py-2 text-sm rounded-xl border transition-colors font-medium ${isActive ? "border-yellow-500/40 text-yellow-400 hover:bg-yellow-500/10" : "border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10"}`}
-            >
-              {isActive ? "⏸ Pausar" : "▶ Ativar"}
-            </button>
-          </div>
+          <button
+            onClick={toggleOfficeStatus}
+            className="px-4 py-2 rounded-xl border border-white/10 bg-white/[0.04] hover:bg-white/[0.08] text-white/50 text-sm transition-colors"
+          >
+            {isActive ? "Pausar" : "Ativar"}
+          </button>
         </div>
 
-        {/* Stats */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        {/* ── Stats ── */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           {[
-            { label: "Decisões Totais", value: decisions.length, color: "text-white" },
-            { label: "Pendentes", value: pendingCount, color: "text-yellow-400" },
-            { label: "Aprovadas", value: approvedCount, color: "text-emerald-400" },
-            { label: "Concluídas", value: doneCount, color: "text-violet-400" },
-          ].map(s => (
-            <div key={s.label} className="card-glass rounded-2xl p-4 text-center">
-              <p className={`text-3xl font-black ${s.color}`}>{s.value}</p>
-              <p className="text-white/40 text-xs mt-1">{s.label}</p>
+            { label: "Conteúdos Gerados", value: office.content_count, icon: "🎬" },
+            { label: "Publicados",         value: office.published_count, icon: "🚀" },
+            { label: "Viralizaram",         value: office.viral_count, icon: "🔥" },
+            { label: "Decisões Pendentes",  value: pendingCount, icon: "⏳" },
+          ].map(stat => (
+            <div key={stat.label} className="rounded-2xl border border-white/[0.06] bg-white/[0.03] p-4">
+              <p className="text-white/30 text-xs mb-1">{stat.icon} {stat.label}</p>
+              <p className="text-2xl font-bold text-white">{stat.value ?? 0}</p>
             </div>
           ))}
         </div>
 
-        {/* BRAIN Panel */}
-        <div className="card-glass rounded-2xl p-6">
-          <div className="flex items-center justify-between flex-wrap gap-4">
+        {/* ── BRAIN Panel ── */}
+        <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-5">
+          <div className="flex items-center justify-between gap-4 flex-wrap">
             <div>
-              <div className="flex items-center gap-2 mb-1">
-                <span className="text-lg">🧠</span>
-                <h2 className="font-bold text-white">Agente BRAIN</h2>
-              </div>
-              <p className="text-white/40 text-sm">Analisa tendências e decide o próximo conteúdo a criar.</p>
+              <h3 className="text-sm font-bold text-white mb-0.5">🧠 BRAIN</h3>
+              <p className="text-white/30 text-xs">
+                Analisa tendências e gera decisões de conteúdo para este escritório.
+              </p>
             </div>
             <button
               onClick={runBrain}
               disabled={brainLoading || !isActive}
-              className="px-5 py-2.5 bg-violet-600 hover:bg-violet-500 disabled:bg-violet-900 disabled:cursor-not-allowed text-white text-sm font-bold rounded-xl transition-colors flex items-center gap-2"
+              className="px-5 py-2.5 bg-violet-600 hover:bg-violet-500 disabled:opacity-40 text-white text-sm font-bold rounded-xl transition-colors"
             >
-              {brainLoading ? <><span className="animate-spin">⚙️</span> Pensando...</> : "▶ Executar BRAIN"}
+              {brainLoading ? "⚙️ Rodando..." : "▶ Rodar BRAIN"}
             </button>
           </div>
           {brainMsg && (
-            <div className={`mt-4 px-4 py-3 rounded-xl text-sm border ${brainMsg.ok ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-300" : "bg-red-500/10 border-red-500/30 text-red-300"}`}>
+            <div className={`mt-3 px-4 py-2.5 rounded-xl text-sm border ${
+              brainMsg.ok
+                ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-300"
+                : "bg-red-500/10 border-red-500/20 text-red-300"
+            }`}>
               {brainMsg.text}
             </div>
           )}
-          {!isActive && (
-            <p className="mt-3 text-yellow-400/70 text-xs">⚠️ Ative o escritório para executar o BRAIN.</p>
-          )}
         </div>
 
-        {/* Platforms + Style */}
-        <div className="grid md:grid-cols-2 gap-4">
-          <div className="card-glass rounded-2xl p-5">
-            <p className="text-xs font-semibold text-white/40 uppercase tracking-wider mb-3">Plataformas</p>
-            {office.platforms.length > 0 ? (
-              <div className="flex flex-wrap gap-2">
-                {office.platforms.map(p => (
-                  <span key={p} className="px-3 py-1.5 rounded-lg bg-white/[0.06] border border-white/[0.08] text-white/70 text-sm">
-                    {PLATFORM_ICONS[p] ?? "🌐"} {p}
-                  </span>
-                ))}
-              </div>
-            ) : <p className="text-white/25 text-sm">Nenhuma plataforma configurada</p>}
-          </div>
-          <div className="card-glass rounded-2xl p-5">
-            <p className="text-xs font-semibold text-white/40 uppercase tracking-wider mb-3">Estilo de Conteúdo</p>
-            <p className="text-white/70 text-sm capitalize">{office.content_style}</p>
-            {office.target_audience && (
-              <>
-                <p className="text-xs font-semibold text-white/40 uppercase tracking-wider mb-1 mt-3">Público-alvo</p>
-                <p className="text-white/50 text-sm">{office.target_audience}</p>
-              </>
-            )}
-          </div>
-        </div>
-
-        {/* Decisions List */}
-        <div className="card-glass rounded-2xl p-6">
-          <div className="flex items-center justify-between flex-wrap gap-4 mb-5">
-            <div className="flex items-center gap-2">
-              <h2 className="font-bold text-white">📋 Decisões do BRAIN</h2>
-              {pendingCount > 0 && (
-                <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-400 border border-yellow-500/30">
-                  {pendingCount} pendente{pendingCount > 1 ? "s" : ""}
+        {/* ── Config row: Platforms + Style ── */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-4">
+            <p className="text-xs text-white/30 uppercase tracking-wider mb-3">📡 Plataformas</p>
+            <div className="flex flex-wrap gap-2">
+              {(office.platforms ?? []).map((p: string) => (
+                <span key={p} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/[0.06] text-white/70 text-xs font-medium">
+                  {PLATFORM_ICONS[p] ?? "🌐"} {p}
                 </span>
-              )}
+              ))}
             </div>
-            {/* Status filter */}
-            <div className="flex gap-1 flex-wrap">
+          </div>
+          <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-4">
+            <p className="text-xs text-white/30 uppercase tracking-wider mb-1.5">🎨 Estilo de Conteúdo</p>
+            <p className="text-white/70 text-sm">{office.content_style || "—"}</p>
+            <p className="text-xs text-white/30 uppercase tracking-wider mb-1.5 mt-3">👥 Público-Alvo</p>
+            <p className="text-white/70 text-sm">{office.target_audience || "—"}</p>
+          </div>
+        </div>
+
+        {/* ── Decisions ── */}
+        <div>
+          <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+            <div>
+              <h2 className="text-base font-bold text-white">Decisões do BRAIN</h2>
+              <p className="text-white/30 text-xs mt-0.5">
+                {pendingCount} pendente(s) · {approvedCount} em andamento · {doneCount} concluída(s)
+              </p>
+            </div>
+            <div className="flex gap-1.5 flex-wrap">
               {STATUS_FILTERS.map(f => (
                 <button
                   key={f}
-                  onClick={() => setStatusFilter(f)}
-                  className={`px-3 py-1.5 text-xs rounded-lg transition-colors font-medium capitalize ${statusFilter === f ? "bg-violet-600/30 text-violet-300 border border-violet-500/40" : "text-white/40 hover:text-white/60 bg-white/[0.03] border border-transparent"}`}
+                  onClick={() => handleFilterChange(f)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-colors ${
+                    statusFilter === f
+                      ? "bg-violet-600 text-white"
+                      : "bg-white/[0.04] text-white/40 hover:bg-white/[0.08] hover:text-white/60"
+                  }`}
                 >
-                  {f === "todos" ? "Todos" : STATUS_LABELS[f]?.replace(/^[^\s]+ /, "") ?? f}
+                  {f === "todos" ? "Todos" : STATUS_LABELS[f]?.replace(/^.+?\s/, "") ?? f}
                 </button>
               ))}
             </div>
           </div>
 
           {decisions.length === 0 ? (
-            <div className="text-center py-12">
-              <p className="text-white/20 text-4xl mb-3">🧠</p>
-              <p className="text-white/30 text-sm">
-                {statusFilter === "todos" ? "Nenhuma decisão ainda. Execute o BRAIN!" : `Nenhuma decisão com status "${statusFilter}".`}
-              </p>
+            <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-10 text-center">
+              <p className="text-white/20 text-sm">Nenhuma decisão{statusFilter !== "todos" ? ` com status "${statusFilter}"` : ""}.</p>
+              {statusFilter === "todos" && (
+                <p className="text-white/15 text-xs mt-1">Rode o BRAIN para gerar decisões de conteúdo.</p>
+              )}
             </div>
           ) : (
-            <div className="space-y-3">
+            <div className="space-y-2">
               {decisions.map(d => (
                 <button
                   key={d.id}
                   onClick={() => setSelectedDecision(d)}
-                  className="w-full text-left p-4 rounded-xl bg-white/[0.03] border border-white/[0.06] hover:border-violet-500/30 hover:bg-white/[0.05] transition-all group"
+                  className="w-full text-left rounded-2xl border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.04] p-4 transition-colors"
                 >
-                  <div className="flex items-center gap-4">
-                    {/* Confidence mini gauge */}
-                    <div className="shrink-0">
-                      <div className="w-12 h-12 rounded-full flex items-center justify-center border-2 text-sm font-bold"
-                        style={{
-                          borderColor: d.confidence_score >= 0.75 ? "#10b981" : d.confidence_score >= 0.5 ? "#f59e0b" : "#ef4444",
-                          color: d.confidence_score >= 0.75 ? "#10b981" : d.confidence_score >= 0.5 ? "#f59e0b" : "#ef4444",
-                        }}
-                      >
-                        {Math.round(d.confidence_score * 100)}%
-                      </div>
-                    </div>
-
-                    {/* Content */}
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-1 flex-wrap">
-                        <p className="text-white font-semibold text-sm truncate">
-                          {d.content_topic || "Sem tópico"}
-                        </p>
-                        <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border shrink-0 ${STATUS_STYLES[d.status] ?? ""}`}>
+                        <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border ${STATUS_STYLES[d.status] ?? ""}`}>
                           {STATUS_LABELS[d.status] ?? d.status}
                         </span>
+                        <span className="text-white/30 text-xs">
+                          {PLATFORM_ICONS[d.target_platform] ?? "🌐"} {d.target_platform}
+                        </span>
+                        {d.selected_archetype && (
+                          <span className="text-violet-400/60 text-xs">🎭 {d.selected_archetype}</span>
+                        )}
                       </div>
-                      <div className="flex items-center gap-3 text-xs text-white/30">
-                        <span>{PLATFORM_ICONS[d.target_platform] ?? "🌐"} {d.target_platform}</span>
-                        {d.selected_archetype && <span>🎭 {d.selected_archetype}</span>}
-                        <span>{new Date(d.created_at).toLocaleDateString("pt-BR")}</span>
-                      </div>
+                      <p className="text-white/80 text-sm font-medium truncate">{d.content_topic || "Sem tópico"}</p>
+                      <p className="text-white/30 text-xs mt-0.5">{new Date(d.created_at).toLocaleString("pt-BR")}</p>
                     </div>
-
-                    <span className="text-white/20 group-hover:text-white/50 transition-colors shrink-0">→</span>
+                    <div className="text-right shrink-0">
+                      <p className="text-white font-bold text-sm">{Math.round(d.confidence_score * 100)}%</p>
+                      <p className="text-white/20 text-[10px]">confiança</p>
+                    </div>
                   </div>
-
-                  {/* Hypothesis preview */}
-                  <p className="mt-2 text-white/30 text-xs line-clamp-2 pl-16 leading-relaxed">
-                    {d.hypothesis}
-                  </p>
                 </button>
               ))}
             </div>
           )}
         </div>
+
+        {/* ── Roteiros Gerados ── */}
+        <div>
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h2 className="text-base font-bold text-white">Roteiros Gerados</h2>
+              <p className="text-white/30 text-xs mt-0.5">
+                {draftItems.length} aguardando revisão · {readyItems.length} prontos · {publishedItems.length} publicados
+              </p>
+            </div>
+          </div>
+
+          {contentItems.length === 0 ? (
+            <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-10 text-center">
+              <p className="text-white/20 text-sm">Nenhum roteiro gerado ainda.</p>
+              <p className="text-white/15 text-xs mt-1">Aprove uma decisão e inicie a execução para gerar roteiros.</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {contentItems.map(item => (
+                <button
+                  key={item.id}
+                  onClick={() => setSelectedItem(item)}
+                  className="w-full text-left rounded-2xl border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.04] p-4 transition-colors group"
+                >
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1 flex-wrap">
+                        <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border ${ITEM_STATUS_STYLES[item.status] ?? ""}`}>
+                          {ITEM_STATUS_LABELS[item.status] ?? item.status}
+                        </span>
+                        {item.duration_seconds && (
+                          <span className="text-white/30 text-xs">⏱ ~{Math.round(item.duration_seconds / 60 * 10) / 10} min</span>
+                        )}
+                        {(() => {
+                          const conf = item.production_meta?.renderer_output?.confidence_score ?? item.production_meta?.confidence_score;
+                          return conf ? <span className="text-white/30 text-xs">🎯 {Math.round(conf * 100)}%</span> : null;
+                        })()}
+                      </div>
+                      <p className="text-white/80 text-sm font-medium truncate">{item.title}</p>
+                      <p className="text-white/30 text-xs mt-0.5">{new Date(item.created_at).toLocaleString("pt-BR")}</p>
+                    </div>
+                    <span className="text-white/20 group-hover:text-white/40 text-lg transition-colors">›</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
       </div>
     </>
   );

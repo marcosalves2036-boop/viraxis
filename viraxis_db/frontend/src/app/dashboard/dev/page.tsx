@@ -223,7 +223,7 @@ export default function DevPage() {
               {STATUS_LABELS[session.status]}
             </span>
           </div>
-          <p className="text-white/50 text-sm bg-white/[0.03] rounded-lg px-3 py-2 italic">"{session.task}"</p>
+          <p className="text-white/50 text-sm bg-white/[0.03] rounded-lg px-3 py-2 italic">&ldquo;{session.task}&rdquo;</p>
 
           {/* Tabs */}
           <div className="flex gap-2 border-b border-white/10 pb-1">

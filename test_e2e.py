@@ -29,7 +29,7 @@ async def main():
             print("⚠️  Usuário já existe — pulando registro")
         else:
             assert r.status_code == 201, f"Register falhou: {r.text}"
-            print(f"✅ POST /auth/register — user: {r.json()['email']}")
+            print(f"✅ POST /auth/register — {r.json().get('message', 'criado')}")
 
         # 3. Login
         r = await client.post("/auth/login", json={"email": EMAIL, "password": PASSWORD})

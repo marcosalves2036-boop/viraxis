@@ -23,6 +23,7 @@ def _build_engine():
     parsed = urlparse(url)
     params = parse_qs(parsed.query, keep_blank_values=True)
     sslmode = params.pop("sslmode", [""])[0]
+    params.pop("channel_binding", None)  # asyncpg nao suporta
 
     clean_query = urlencode({k: v[0] for k, v in params.items()})
     clean_url = urlunparse(parsed._replace(query=clean_query))

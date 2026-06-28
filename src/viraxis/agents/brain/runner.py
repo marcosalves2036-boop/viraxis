@@ -64,6 +64,7 @@ async def run_brain(
     user_id: UUID,
     *,
     temperature: float | None = None,
+    raw_video_id: UUID | None = None,
 ) -> ContentDecision:
     """
     Ponto de entrada principal do BRAIN.
@@ -73,6 +74,8 @@ async def run_brain(
         user_id: UUID do usuário dono do escritório.
         temperature: Criatividade do LLM. Se None, usa brain_params do NicheProfile
                      ou o padrão (0.7).
+        raw_video_id: UUID do vídeo bruto de referência (opcional). Vinculado à
+                      ContentDecision para o RENDERER usar como contexto de estilo.
 
     Returns:
         ContentDecision persistido no banco com status=pending.
@@ -186,8 +189,7 @@ async def run_brain(
             selected_archetype=decision_output.selected_archetype,
             selected_platform=decision_output.selected_platform,
             confidence_score=decision_output.confidence_score,
-            # v2: referência ao vídeo bruto (se BRAIN escolheu usar um)
-            extra_instructions=f"raw_video_id:{decision_output.raw_video_id}" if decision_output.raw_video_id else None,
+            raw_video_id=raw_video_id,  # v2: propagado do endpoint brain/run
         )
 
         # ---- 5. Atualizar log para success ----

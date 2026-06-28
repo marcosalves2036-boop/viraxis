@@ -82,6 +82,7 @@ class ContentDecisionRepository(BaseRepository[ContentDecision]):
         confidence_score: float | None = None,
         status: DecisionStatus = DecisionStatus.pending,
         extra_instructions: str | None = None,
+        raw_video_id: UUID | None = None,
     ) -> ContentDecision:
         """
         Atalho semântico — cria uma ContentDecision com campos nomeados.
@@ -100,4 +101,5 @@ class ContentDecisionRepository(BaseRepository[ContentDecision]):
             confidence_score=confidence_score,
             status=status,
             extra_instructions=extra_instructions,
+            raw_video_id=raw_video_id,
         )

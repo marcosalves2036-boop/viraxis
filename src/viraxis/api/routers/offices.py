@@ -301,18 +301,31 @@ async def delete_office(
 
 # ── Endpoints: BRAIN ───────────────────────────────────────────────────────────
 
+class BrainRunRequest(BaseModel):
+    raw_video_id: UUID | None = None
+
+
 @router.post("/{office_id}/brain/run", response_model=BrainRunResponse)
 async def run_brain_for_office(
     office_id: UUID,
+    body: BrainRunRequest = BrainRunRequest(),
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    """Executa o agente BRAIN para um escritório e retorna a decisão gerada."""
+    """Executa o agente BRAIN para um escritório e retorna a decisão gerada.
+
+    Aceita opcionalmente raw_video_id para o BRAIN vincular um vídeo de referência
+    à decisão, que o RENDERER vai usar como contexto de estilo.
+    """
     await _get_office_or_404(office_id, current_user.id, session)
 
     try:
         from viraxis.agents.brain.runner import run_brain
-        decision = await run_brain(office_id, current_user.id)
+        decision = await run_brain(
+            office_id,
+            current_user.id,
+            raw_video_id=body.raw_video_id,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

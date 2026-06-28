@@ -79,6 +79,14 @@ class ContentDecision(BaseModelMixin, Base):
     confidence_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     extra_instructions: Mapped[str | None] = mapped_column(Text, nullable=True, comment="Instruções adicionais do criador para o roteiro.")
 
+    # Vídeo bruto de referência (opcional) — vinculado pelo BRAIN para o RENDERER usar como estilo
+    raw_video_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("raw_videos.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="Vídeo bruto de referência para o RENDERER usar como contexto de estilo.",
+    )
+
     # Inputs que embasaram a decisão (snapshot das evidências no momento)
     input_signals: Mapped[dict] = mapped_column(
         JSONB, nullable=False, default=dict, server_default="{}",
@@ -88,6 +96,9 @@ class ContentDecision(BaseModelMixin, Base):
     # Relationships
     office: Mapped["Office"] = relationship(  # type: ignore[name-defined]  # noqa: F821
         "Office", back_populates="content_decisions", lazy="raise"
+    )
+    raw_video: Mapped["RawVideo | None"] = relationship(  # type: ignore[name-defined]  # noqa: F821
+        "RawVideo", lazy="raise"
     )
     content_items: Mapped[list["ContentItem"]] = relationship(  # type: ignore[name-defined]  # noqa: F821
         "ContentItem", back_populates="decision", lazy="raise"

@@ -395,57 +395,79 @@ async def meta_callback(
     user_id = state_data["sub"]
     office_id = state_data.get("office_id")
 
-    async with httpx.AsyncClient(timeout=15) as client:
-        token_resp = await client.get(META_TOKEN_URL, params={
-            "client_id": settings.meta_app_id,
-            "client_secret": settings.meta_app_secret,
-            "redirect_uri": settings.meta_redirect_uri,
-            "code": code,
-        })
-        if token_resp.status_code != 200:
-            logger.error("Meta token exchange failed: %s", token_resp.text)
-            return _frontend_redirect("error", "meta", "token_exchange_failed", office_id)
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            token_resp = await client.get(META_TOKEN_URL, params={
+                "client_id": settings.meta_app_id,
+                "client_secret": settings.meta_app_secret,
+                "redirect_uri": settings.meta_redirect_uri,
+                "code": code,
+            })
+            if token_resp.status_code != 200:
+                logger.error("Meta token exchange failed: %s", token_resp.text)
+                return _frontend_redirect("error", "meta", "token_exchange_failed", office_id)
 
-        tokens = token_resp.json()
-        access_token = tokens["access_token"]
+            tokens = token_resp.json()
+            if "error" in tokens:
+                err = tokens["error"]
+                err_msg = err.get("message", "token_exchange_failed") if isinstance(err, dict) else str(err)
+                logger.error("Meta token error: %s", tokens)
+                return _frontend_redirect("error", "meta", err_msg, office_id)
 
-        me_resp = await client.get(
-            META_ME_URL,
-            params={"fields": "id,name,email", "access_token": access_token},
-        )
-        me = me_resp.json()
-        fb_user_id = me.get("id", "")
-        fb_name = me.get("name", "facebook_user")
+            access_token = tokens["access_token"]
 
-    access_enc = _encrypt_token(access_token)
-    expires_in = tokens.get("expires_in", 5183944)
-    expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+            me_resp = await client.get(
+                META_ME_URL,
+                params={"fields": "id,name,email", "access_token": access_token},
+            )
+            me = me_resp.json()
+            logger.info("Meta me status=%s body=%s", me_resp.status_code, me_resp.text[:300])
+            fb_user_id = me.get("id", "")
+            fb_name = me.get("name", "facebook_user")
 
-    repo = SocialAccountRepository(session)
-    existing = await repo.get_by_user_platform_username(
-        UUID(user_id), SocialPlatform.facebook, fb_name
-    )
-    if existing:
-        existing.access_token_enc = access_enc
-        existing.token_expires_at = expires_at
-        existing.is_active = True
-        if office_id:
-            existing.office_id = UUID(office_id)
-        await repo.save(existing)
-    else:
-        account = SocialAccount(
-            user_id=UUID(user_id),
-            office_id=UUID(office_id) if office_id else None,
-            platform=SocialPlatform.facebook,
-            platform_username=fb_name,
-            platform_user_id=fb_user_id,
-            access_token_enc=access_enc,
-            refresh_token_enc=None,
-            token_expires_at=expires_at,
-            is_active=True,
-        )
-        session.add(account)
+        access_enc = _encrypt_token(access_token)
+        expires_in = tokens.get("expires_in", 5183944)
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
 
-    await session.commit()
-    logger.info("Meta conectado: user=%s fb_id=%s", user_id, fb_user_id)
-    return _frontend_redirect("success", "facebook", office_id=office_id)
+        for _attempt in range(4):
+            try:
+                async with AsyncSessionLocal() as db_sess:
+                    repo = SocialAccountRepository(db_sess)
+                    existing = await repo.get_by_user_platform_username(
+                        UUID(user_id), SocialPlatform.facebook, fb_name
+                    )
+                    if existing:
+                        existing.access_token_enc = access_enc
+                        existing.token_expires_at = expires_at
+                        existing.is_active = True
+                        if office_id:
+                            existing.office_id = UUID(office_id)
+                        await repo.save(existing)
+                    else:
+                        account = SocialAccount(
+                            user_id=UUID(user_id),
+                            office_id=UUID(office_id) if office_id else None,
+                            platform=SocialPlatform.facebook,
+                            platform_username=fb_name,
+                            platform_user_id=fb_user_id,
+                            access_token_enc=access_enc,
+                            refresh_token_enc=None,
+                            token_expires_at=expires_at,
+                            is_active=True,
+                        )
+                        db_sess.add(account)
+                    await db_sess.commit()
+                break
+            except (ConnectionRefusedError, OSError) as _ce:
+                wait = 2 ** _attempt
+                logger.warning("Meta Neon cold-start attempt %d/4: %s — retrying in %ds", _attempt + 1, _ce, wait)
+                if _attempt >= 3:
+                    raise
+                await asyncio.sleep(wait)
+
+        logger.info("Meta conectado: user=%s fb_id=%s", user_id, fb_user_id)
+        return _frontend_redirect("success", "facebook", office_id=office_id)
+
+    except Exception as exc:
+        logger.exception("Meta callback exception: %s", exc)
+        return _frontend_redirect("error", "meta", "internal_error", office_id)

@@ -36,6 +36,15 @@ class BrainDecisionInput(BaseModel):
         description="Vídeos brutos disponíveis que o BRAIN pode referenciar na decisão.",
     )
 
+    # v2: multiplicadores sazonais das tendências recentes
+    seasonal_multipliers: list[float] = Field(
+        default_factory=list,
+        description=(
+            "Lista de seasonal_multiplier dos TrendSnapshots mais recentes. "
+            "Valores > 1.0 indicam alta temporada; < 1.0 indicam baixa temporada."
+        ),
+    )
+
     @classmethod
     def from_niche_profile(
         cls,
@@ -86,6 +95,19 @@ class BrainDecisionInput(BaseModel):
         else:
             videos_str = "  nenhum vídeo bruto disponível ainda"
 
+        # Seasonal multipliers summary
+        if self.seasonal_multipliers:
+            avg_mult = sum(self.seasonal_multipliers) / len(self.seasonal_multipliers)
+            if avg_mult >= 1.2:
+                season_label = f"ALTA TEMPORADA (média {avg_mult:.2f}x) — maximize volume e ousadia criativa."
+            elif avg_mult >= 0.9:
+                season_label = f"Temporada normal (média {avg_mult:.2f}x) — mantenha o ritmo padrão."
+            else:
+                season_label = f"BAIXA TEMPORADA (média {avg_mult:.2f}x) — priorize conteúdo evergreen e eficiência."
+            seasonal_str = f"{season_label} (amostras: {len(self.seasonal_multipliers)})"
+        else:
+            seasonal_str = "nenhum dado sazonal disponível — use 1.0 como padrão neutro."
+
         return f"""
 NICHO: {self.niche_name}
 
@@ -106,6 +128,10 @@ NOTAS DO OPERADOR:
 VÍDEOS BRUTOS DISPONÍVEIS NA BIBLIOTECA:
 {videos_str}
 (Se relevante, o selected_topic pode referenciar um vídeo pelo ID para o RENDERER usar como base.)
+
+MULTIPLICADOR SAZONAL (tendências recentes):
+{seasonal_str}
+(Use este sinal para calibrar o confidence_score e a ousadia da hipótese.)
 """.strip()
 
 

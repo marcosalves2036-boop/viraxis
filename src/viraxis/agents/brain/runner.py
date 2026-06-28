@@ -13,6 +13,8 @@ import logging
 import traceback
 from uuid import UUID
 
+from sqlalchemy import select, desc
+
 from crewai import Crew, Process
 
 from viraxis.agents.brain.agent import create_brain_agent
@@ -25,6 +27,7 @@ from viraxis.infrastructure.repositories.content_decision import ContentDecision
 from viraxis.infrastructure.repositories.niche_profile import NicheProfileRepository
 from viraxis.infrastructure.repositories.raw_video import RawVideoRepository
 from viraxis.agents.brain.schemas import RawVideoContext
+from viraxis.domain.models.trend_snapshot import TrendSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +114,27 @@ async def run_brain(
                 office_id,
             )
 
+        # ---- v2: Buscar seasonal_multipliers dos TrendSnapshots recentes ----
+        stmt = (
+            select(TrendSnapshot.seasonal_multiplier)
+            .where(TrendSnapshot.office_id == office_id)
+            .where(TrendSnapshot.seasonal_multiplier.isnot(None))
+            .order_by(desc(TrendSnapshot.captured_at))
+            .limit(10)
+        )
+        result = await session.execute(stmt)
+        raw_multipliers = result.scalars().all()
+        seasonal_multipliers = [float(m) for m in raw_multipliers if m is not None]
+        if seasonal_multipliers:
+            logger.info(
+                "BRAIN: %d seasonal_multiplier(s) carregados para office=%s | avg=%.2f",
+                len(seasonal_multipliers),
+                office_id,
+                sum(seasonal_multipliers) / len(seasonal_multipliers),
+            )
+
         niche_input = BrainDecisionInput.from_niche_profile(niche, raw_videos=raw_video_contexts)
+        niche_input.seasonal_multipliers = seasonal_multipliers
         logger.info(
             "BRAIN iniciando análise | office=%s | nicho=%s | temp=%.2f",
             office_id,

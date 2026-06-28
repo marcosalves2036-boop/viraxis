@@ -384,7 +384,6 @@ async def meta_callback(
     state: str = Query(...),
     error: str | None = Query(None),
     error_description: str | None = Query(None),
-    session: AsyncSession = Depends(get_session),
 ):
     if error:
         return _frontend_redirect("error", "meta", error_description or error)

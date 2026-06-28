@@ -190,4 +190,19 @@ function BibliotecaContent() {
                   </div>
                 </div>
               )}
-      
+
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function BibliotecaPage() {
+  return (
+    <Suspense fallback={<div style={{ padding: 32, color: "#94a3b8" }}>Carregando biblioteca...</div>}>
+      <BibliotecaContent />
+    </Suspense>
+  );
+}

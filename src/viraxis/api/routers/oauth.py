@@ -250,7 +250,9 @@ async def tiktok_callback(
     user_id = state_data["sub"]
     office_id = state_data.get("office_id")
 
+    _step = "init"
     try:
+        _step = "token_exchange"
         async with httpx.AsyncClient(timeout=15) as client:
             token_resp = await client.post(
                 TIKTOK_TOKEN_URL,
@@ -289,6 +291,7 @@ async def tiktok_callback(
             access_token = token_data["access_token"]
             open_id = token_data.get("open_id", "")
 
+            _step = "user_info"
             user_resp = await client.get(
                 TIKTOK_USER_URL,
                 params={"fields": "open_id,union_id,avatar_url,display_name"},
@@ -298,12 +301,14 @@ async def tiktok_callback(
             user_data = user_resp.json().get("data", {}).get("user", {})
             display_name = user_data.get("display_name", open_id or "tiktok_user")
         # ── DB save ──────────────────────────────────────────────────────────
+        _step = "db_encrypt"
         access_enc = _encrypt_token(access_token)
         refresh_token_val = token_data.get("refresh_token", "")
         refresh_enc = _encrypt_token(refresh_token_val) if refresh_token_val else None
         expires_in = token_data.get("expires_in", 86400)
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
 
+        _step = "db_query"
         repo = SocialAccountRepository(session)
         existing = await repo.get_by_user_platform_username(
             UUID(user_id), SocialPlatform.tiktok, display_name
@@ -330,13 +335,14 @@ async def tiktok_callback(
             )
             session.add(account)
 
+        _step = "db_commit"
         await session.commit()
         logger.info("TikTok conectado: user=%s open_id=%s", user_id, open_id)
         return _frontend_redirect("success", "tiktok", office_id=office_id)
 
     except Exception as exc:
-        logger.exception("TikTok callback exception: %s", exc)
-        return _frontend_redirect("error", "tiktok", f"DBG:{type(exc).__name__}:{str(exc)[:150]}", office_id)
+        logger.exception("TikTok callback exception at step=%s: %s", _step, exc)
+        return _frontend_redirect("error", "tiktok", f"@{_step}:{type(exc).__name__}:{str(exc)[:100]}", office_id)
 
 
 # ─── Meta (Facebook / Instagram) ──────────────────────────────────────────────

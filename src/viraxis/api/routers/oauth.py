@@ -297,45 +297,46 @@ async def tiktok_callback(
             logger.info("TikTok user info status=%s body=%s", user_resp.status_code, user_resp.text[:300])
             user_data = user_resp.json().get("data", {}).get("user", {})
             display_name = user_data.get("display_name", open_id or "tiktok_user")
+        # ── DB save ──────────────────────────────────────────────────────────
+        access_enc = _encrypt_token(access_token)
+        refresh_token_val = token_data.get("refresh_token", "")
+        refresh_enc = _encrypt_token(refresh_token_val) if refresh_token_val else None
+        expires_in = token_data.get("expires_in", 86400)
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+
+        repo = SocialAccountRepository(session)
+        existing = await repo.get_by_user_platform_username(
+            UUID(user_id), SocialPlatform.tiktok, display_name
+        )
+        if existing:
+            existing.access_token_enc = access_enc
+            existing.refresh_token_enc = refresh_enc
+            existing.token_expires_at = expires_at
+            existing.is_active = True
+            if office_id:
+                existing.office_id = UUID(office_id)
+            await repo.save(existing)
+        else:
+            account = SocialAccount(
+                user_id=UUID(user_id),
+                office_id=UUID(office_id) if office_id else None,
+                platform=SocialPlatform.tiktok,
+                platform_username=display_name,
+                platform_user_id=open_id,
+                access_token_enc=access_enc,
+                refresh_token_enc=refresh_enc,
+                token_expires_at=expires_at,
+                is_active=True,
+            )
+            session.add(account)
+
+        await session.commit()
+        logger.info("TikTok conectado: user=%s open_id=%s", user_id, open_id)
+        return _frontend_redirect("success", "tiktok", office_id=office_id)
+
     except Exception as exc:
         logger.exception("TikTok callback exception: %s", exc)
         return _frontend_redirect("error", "tiktok", "internal_error", office_id)
-
-    access_enc = _encrypt_token(access_token)
-    refresh_token = token_data.get("refresh_token", "")
-    refresh_enc = _encrypt_token(refresh_token) if refresh_token else None
-    expires_in = token_data.get("expires_in", 86400)
-    expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
-
-    repo = SocialAccountRepository(session)
-    existing = await repo.get_by_user_platform_username(
-        UUID(user_id), SocialPlatform.tiktok, display_name
-    )
-    if existing:
-        existing.access_token_enc = access_enc
-        existing.refresh_token_enc = refresh_enc
-        existing.token_expires_at = expires_at
-        existing.is_active = True
-        if office_id:
-            existing.office_id = UUID(office_id)
-        await repo.save(existing)
-    else:
-        account = SocialAccount(
-            user_id=UUID(user_id),
-            office_id=UUID(office_id) if office_id else None,
-            platform=SocialPlatform.tiktok,
-            platform_username=display_name,
-            platform_user_id=open_id,
-            access_token_enc=access_enc,
-            refresh_token_enc=refresh_enc,
-            token_expires_at=expires_at,
-            is_active=True,
-        )
-        session.add(account)
-
-    await session.commit()
-    logger.info("TikTok conectado: user=%s open_id=%s", user_id, open_id)
-    return _frontend_redirect("success", "tiktok", office_id=office_id)
 
 
 # ─── Meta (Facebook / Instagram) ──────────────────────────────────────────────

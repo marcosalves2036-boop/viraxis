@@ -402,8 +402,9 @@ async def meta_callback(
                 "code": code,
             })
             if token_resp.status_code != 200:
-                logger.error("Meta token exchange failed: %s", token_resp.text)
-                return _frontend_redirect("error", "meta", "token_exchange_failed", office_id)
+                logger.error("Meta token exchange failed %d: %s", token_resp.status_code, token_resp.text)
+                err_body = token_resp.text[:100].replace(" ", "_").replace('"', "").replace(":", "-")
+                return _frontend_redirect("error", "meta", f"meta_err_{token_resp.status_code}_{err_body}", office_id)
 
             tokens = token_resp.json()
             if "error" in tokens:

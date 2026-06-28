@@ -223,27 +223,14 @@ async def tiktok_connect(
     office_id: str | None = Query(None),
 ):
     user_id = _verify_access_token(access_token)
-    code_verifier, code_challenge = _pkce_pair()
-    # Verificar consistência PKCE localmente antes de usar
-    import hashlib as _hashlib
-    import base64 as _base64
-    _expected = _base64.urlsafe_b64encode(
-        _hashlib.sha256(code_verifier.encode()).digest()
-    ).rstrip(b"=").decode()
-    if _expected != code_challenge:
-        logger.error("PKCE mismatch na geração! verifier=%s challenge=%s expected=%s",
-                     code_verifier, code_challenge, _expected)
-    else:
-        logger.info("TikTok connect: PKCE ok | verifier=%s | challenge=%s", code_verifier, code_challenge)
-    state = _create_state(user_id, office_id, code_verifier)
+    # PKCE desabilitado temporariamente para diagnóstico de sandbox
+    state = _create_state(user_id, office_id)
     params = {
         "client_key": settings.tiktok_client_key,
         "redirect_uri": settings.tiktok_redirect_uri,
         "response_type": "code",
         "scope": TIKTOK_SCOPES,
         "state": state,
-        "code_challenge": code_challenge,
-        "code_challenge_method": "S256",
     }
     return RedirectResponse(url=f"{TIKTOK_AUTH_URL}?{urlencode(params)}")
 
@@ -265,7 +252,6 @@ async def tiktok_callback(
 
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            code_verifier = state_data.get("cv", "")
             token_resp = await client.post(
                 TIKTOK_TOKEN_URL,
                 data={
@@ -274,7 +260,6 @@ async def tiktok_callback(
                     "code": code,
                     "grant_type": "authorization_code",
                     "redirect_uri": settings.tiktok_redirect_uri,
-                    "code_verifier": code_verifier,
                 },
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
             )

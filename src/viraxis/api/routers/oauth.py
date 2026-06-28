@@ -252,35 +252,53 @@ async def tiktok_callback(
     user_id = state_data["sub"]
     office_id = state_data.get("office_id")
 
-    async with httpx.AsyncClient(timeout=15) as client:
-        code_verifier = state_data.get("cv", "")
-        token_resp = await client.post(
-            TIKTOK_TOKEN_URL,
-            data={
-                "client_key": settings.tiktok_client_key,
-                "client_secret": settings.tiktok_client_secret,
-                "code": code,
-                "grant_type": "authorization_code",
-                "redirect_uri": settings.tiktok_redirect_uri,
-                "code_verifier": code_verifier,
-            },
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
-        if token_resp.status_code != 200:
-            logger.error("TikTok token exchange failed: %s", token_resp.text)
-            return _frontend_redirect("error", "tiktok", "token_exchange_failed", office_id)
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            code_verifier = state_data.get("cv", "")
+            token_resp = await client.post(
+                TIKTOK_TOKEN_URL,
+                data={
+                    "client_key": settings.tiktok_client_key,
+                    "client_secret": settings.tiktok_client_secret,
+                    "code": code,
+                    "grant_type": "authorization_code",
+                    "redirect_uri": settings.tiktok_redirect_uri,
+                    "code_verifier": code_verifier,
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+            logger.info("TikTok token exchange status=%s body=%s", token_resp.status_code, token_resp.text[:500])
+            if token_resp.status_code != 200:
+                logger.error("TikTok token exchange failed: %s", token_resp.text)
+                return _frontend_redirect("error", "tiktok", "token_exchange_failed", office_id)
 
-        token_data = token_resp.json().get("data", token_resp.json())
-        access_token = token_data["access_token"]
-        open_id = token_data.get("open_id", "")
+            resp_json = token_resp.json()
+            # TikTok v2 sandbox pode retornar {"data": {...}} ou o objeto direto
+            # Verificar se há erro no corpo mesmo com HTTP 200
+            if resp_json.get("error", {}).get("code", "ok") != "ok":
+                err_msg = resp_json.get("error", {}).get("message", "token_exchange_failed")
+                logger.error("TikTok token error in body: %s", resp_json)
+                return _frontend_redirect("error", "tiktok", err_msg, office_id)
 
-        user_resp = await client.get(
-            TIKTOK_USER_URL,
-            params={"fields": "open_id,union_id,avatar_url,display_name"},
-            headers={"Authorization": f"Bearer {access_token}"},
-        )
-        user_data = user_resp.json().get("data", {}).get("user", {})
-        display_name = user_data.get("display_name", open_id or "tiktok_user")
+            token_data = resp_json.get("data", resp_json)
+            if "access_token" not in token_data:
+                logger.error("TikTok no access_token in response: %s", resp_json)
+                return _frontend_redirect("error", "tiktok", "no_access_token", office_id)
+
+            access_token = token_data["access_token"]
+            open_id = token_data.get("open_id", "")
+
+            user_resp = await client.get(
+                TIKTOK_USER_URL,
+                params={"fields": "open_id,union_id,avatar_url,display_name"},
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            logger.info("TikTok user info status=%s body=%s", user_resp.status_code, user_resp.text[:300])
+            user_data = user_resp.json().get("data", {}).get("user", {})
+            display_name = user_data.get("display_name", open_id or "tiktok_user")
+    except Exception as exc:
+        logger.exception("TikTok callback exception: %s", exc)
+        return _frontend_redirect("error", "tiktok", "internal_error", office_id)
 
     access_enc = _encrypt_token(access_token)
     refresh_token = token_data.get("refresh_token", "")

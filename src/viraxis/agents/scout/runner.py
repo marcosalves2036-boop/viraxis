@@ -114,11 +114,26 @@ async def run_scout(office_id: UUID, user_id: UUID, url: str) -> TrendSnapshot:
             )
 
             # ---- 4. Persistir TrendSnapshot ----
+            # Calcular viral_score baseado em engagement_estimate
+            _engagement_to_score = {"low": 0.3, "medium": 0.6, "high": 0.9}
+            computed_viral_score = _engagement_to_score.get(
+                scout_output.engagement_estimate, 0.5
+            )
+
             snapshot = TrendSnapshot(
                 office_id=office_id,
                 user_id=user_id,
                 source=TrendSource.scout_url,
                 source_url=url,
+                # ── campos promovidos (migration 0006) ──
+                platform=metadata.platform,
+                video_title=metadata.title[:512] if metadata.title else None,
+                duration_seconds=metadata.duration_seconds,
+                view_count=metadata.view_count,
+                like_count=metadata.like_count,
+                viral_score=computed_viral_score,
+                seasonal_multiplier=1.0,
+                # ────────────────────────────────────────
                 raw_metadata={
                     "title": metadata.title,
                     "description": metadata.description[:1000],

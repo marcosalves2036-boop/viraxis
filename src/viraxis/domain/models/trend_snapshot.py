@@ -4,7 +4,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, String, func
+from sqlalchemy import BigInteger, DateTime, Enum, Float, ForeignKey, Index, Integer, String, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -29,6 +29,7 @@ class TrendSnapshot(UUIDPrimaryKeyMixin, Base):
         Index("ix_trend_snapshots_office_captured", "office_id", "captured_at"),
         Index("ix_trend_snapshots_user_id", "user_id"),
         Index("ix_trend_snapshots_source", "source"),
+        Index("ix_trend_snapshots_platform", "platform"),
         {"comment": "Sinais de tendência coletados — imutáveis, preservam histórico."},
     )
 
@@ -50,6 +51,39 @@ class TrendSnapshot(UUIDPrimaryKeyMixin, Base):
         String(2048), nullable=True,
         comment="URL original do vídeo referência (SCOUT mode).",
     )
+
+    # ── 7 novos campos (migration 0006) ──────────────────────────────────
+    # Promovidos do JSONB raw_metadata para buscas e ordenação eficientes
+
+    platform: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, index=False,  # índice via __table_args__
+        comment="Plataforma do vídeo original: youtube, tiktok, twitch, instagram.",
+    )
+    video_title: Mapped[str | None] = mapped_column(
+        String(512), nullable=True,
+        comment="Título do vídeo original (promovido de raw_metadata).",
+    )
+    duration_seconds: Mapped[float | None] = mapped_column(
+        Float, nullable=True,
+        comment="Duração do vídeo em segundos (promovido de raw_metadata).",
+    )
+    view_count: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True,
+        comment="Views do vídeo original no momento da coleta.",
+    )
+    like_count: Mapped[int | None] = mapped_column(
+        Integer, nullable=True,
+        comment="Likes do vídeo original no momento da coleta.",
+    )
+    viral_score: Mapped[float | None] = mapped_column(
+        Float, nullable=True,
+        comment="Score de viralidade calculado pelo SCOUT (0.0–1.0).",
+    )
+    seasonal_multiplier: Mapped[float | None] = mapped_column(
+        Float, nullable=True, server_default="1.0",
+        comment="Multiplicador sazonal do BRAIN (ex.: 1.3 = alta temporada). Padrão 1.0.",
+    )
+    # ─────────────────────────────────────────────────────────────────────
 
     # Metadados brutos do yt-dlp / upload
     raw_metadata: Mapped[dict] = mapped_column(

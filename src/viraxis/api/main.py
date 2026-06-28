@@ -133,3 +133,55 @@ async def startup_event() -> None:
 @app.get("/health", tags=["infra"])
 async def health() -> dict:
     return {"status": "ok", "service": "viraxis-api", "version": "0.3.0"}
+
+
+@app.get("/health/db", tags=["infra"])
+async def health_db() -> dict:
+    """Testa conectividade TCP + asyncpg com o Neon DB."""
+    import asyncio, socket
+    from viraxis.config import settings
+
+    # Extrai host/porta da DATABASE_URL
+    from urllib.parse import urlparse
+    parsed = urlparse(settings.database_url)
+    host = parsed.hostname or "unknown"
+    port = parsed.port or 5432
+
+    # 1. TCP raw
+    tcp_ok = False
+    tcp_err = ""
+    try:
+        loop = asyncio.get_event_loop()
+        def _tcp():
+            s = socket.create_connection((host, port), timeout=5)
+            s.close()
+            return True
+        tcp_ok = await loop.run_in_executor(None, _tcp)
+    except Exception as e:
+        tcp_err = f"{type(e).__name__}: {e}"
+
+    # 2. asyncpg
+    pg_ok = False
+    pg_err = ""
+    try:
+        import asyncpg
+        conn = await asyncio.wait_for(
+            asyncpg.connect(
+                host=host, port=port,
+                user=parsed.username, password=parsed.password,
+                database=(parsed.path or "/neondb").lstrip("/"),
+                ssl="require",
+            ),
+            timeout=8,
+        )
+        await conn.fetchval("SELECT 1")
+        await conn.close()
+        pg_ok = True
+    except Exception as e:
+        pg_err = f"{type(e).__name__}: {e}"
+
+    return {
+        "host": host, "port": port,
+        "tcp": "ok" if tcp_ok else f"FAIL: {tcp_err}",
+        "asyncpg": "ok" if pg_ok else f"FAIL: {pg_err}",
+    }

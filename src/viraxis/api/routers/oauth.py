@@ -300,7 +300,7 @@ async def tiktok_callback(
             logger.info("TikTok user info status=%s body=%s", user_resp.status_code, user_resp.text[:300])
             user_data = user_resp.json().get("data", {}).get("user", {})
             display_name = user_data.get("display_name", open_id or "tiktok_user")
-        # ── DB save ──────────────────────────────────────────────────────────
+        # ── DB save — retry loop para Neon cold-start ───────────────────────
         _step = "db_encrypt"
         access_enc = _encrypt_token(access_token)
         refresh_token_val = token_data.get("refresh_token", "")
@@ -308,35 +308,54 @@ async def tiktok_callback(
         expires_in = token_data.get("expires_in", 86400)
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
 
-        _step = "db_query"
-        repo = SocialAccountRepository(session)
-        existing = await repo.get_by_user_platform_username(
-            UUID(user_id), SocialPlatform.tiktok, display_name
-        )
-        if existing:
-            existing.access_token_enc = access_enc
-            existing.refresh_token_enc = refresh_enc
-            existing.token_expires_at = expires_at
-            existing.is_active = True
-            if office_id:
-                existing.office_id = UUID(office_id)
-            await repo.save(existing)
-        else:
-            account = SocialAccount(
-                user_id=UUID(user_id),
-                office_id=UUID(office_id) if office_id else None,
-                platform=SocialPlatform.tiktok,
-                platform_username=display_name,
-                platform_user_id=open_id,
-                access_token_enc=access_enc,
-                refresh_token_enc=refresh_enc,
-                token_expires_at=expires_at,
-                is_active=True,
-            )
-            session.add(account)
+        _step = "db_connect"
+        _db_saved = False
+        for _attempt in range(4):  # até 4 tentativas com backoff
+            try:
+                async with AsyncSessionLocal() as db_sess:
+                    _step = "db_query"
+                    repo = SocialAccountRepository(db_sess)
+                    existing = await repo.get_by_user_platform_username(
+                        UUID(user_id), SocialPlatform.tiktok, display_name
+                    )
+                    if existing:
+                        existing.access_token_enc = access_enc
+                        existing.refresh_token_enc = refresh_enc
+                        existing.token_expires_at = expires_at
+                        existing.is_active = True
+                        if office_id:
+                            existing.office_id = UUID(office_id)
+                        await repo.save(existing)
+                    else:
+                        account = SocialAccount(
+                            user_id=UUID(user_id),
+                            office_id=UUID(office_id) if office_id else None,
+                            platform=SocialPlatform.tiktok,
+                            platform_username=display_name,
+                            platform_user_id=open_id,
+                            access_token_enc=access_enc,
+                            refresh_token_enc=refresh_enc,
+                            token_expires_at=expires_at,
+                            is_active=True,
+                        )
+                        db_sess.add(account)
+                    _step = "db_commit"
+                    await db_sess.commit()
+                _db_saved = True
+                break
+            except (ConnectionRefusedError, OSError) as _ce:
+                wait = 2 ** _attempt  # 1, 2, 4, 8 segundos
+                logger.warning(
+                    "Neon cold-start attempt %d/4: %s — aguardando %ds",
+                    _attempt + 1, _ce, wait,
+                )
+                if _attempt >= 3:
+                    raise
+                await asyncio.sleep(wait)
 
-        _step = "db_commit"
-        await session.commit()
+        if not _db_saved:
+            raise RuntimeError("DB save loop exited without saving")
+
         logger.info("TikTok conectado: user=%s open_id=%s", user_id, open_id)
         return _frontend_redirect("success", "tiktok", office_id=office_id)
 

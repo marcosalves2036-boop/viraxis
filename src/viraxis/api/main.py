@@ -135,12 +135,6 @@ async def health() -> dict:
     return {"status": "ok", "service": "viraxis-api", "version": "0.3.0"}
 
 
-@app.get("/health/db", tags=["infra"])
-async def health_db() -> dict:
-    """Testa conectividade TCP + asyncpg com o Neon DB."""
-    import asyncio, socket
-    from viraxis.config import settings
-
     # Extrai host/porta da DATABASE_URL
     from urllib.parse import urlparse
     parsed = urlparse(settings.database_url)

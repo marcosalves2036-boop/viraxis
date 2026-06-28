@@ -374,6 +374,7 @@ async def meta_connect(
         "response_type": "code",
         "scope": META_SCOPES,
         "state": state,
+        "auth_type": "rerequest",  # force fresh code each time
     }
     return RedirectResponse(url=f"{META_AUTH_URL}?{urlencode(params)}")
 

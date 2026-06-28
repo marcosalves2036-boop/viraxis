@@ -336,7 +336,7 @@ async def tiktok_callback(
 
     except Exception as exc:
         logger.exception("TikTok callback exception: %s", exc)
-        return _frontend_redirect("error", "tiktok", "internal_error", office_id)
+        return _frontend_redirect("error", "tiktok", f"DBG:{type(exc).__name__}:{str(exc)[:150]}", office_id)
 
 
 # ─── Meta (Facebook / Instagram) ──────────────────────────────────────────────

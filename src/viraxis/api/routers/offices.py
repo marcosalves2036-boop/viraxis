@@ -9,7 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, s
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import delete as sa_delete, select
 
 from viraxis.api.deps import get_current_user, get_session
 from viraxis.domain.models.content_decision import ContentDecision, DecisionStatus
@@ -289,8 +289,13 @@ async def delete_office(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    office = await _get_office_or_404(office_id, current_user.id, session)
-    await session.delete(office)
+    await _get_office_or_404(office_id, current_user.id, session)
+    await session.execute(
+        sa_delete(Office).where(
+            Office.id == office_id,
+            Office.user_id == current_user.id,
+        )
+    )
     await session.commit()
 
 

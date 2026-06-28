@@ -7,10 +7,23 @@ export async function POST(
 ) {
   const { id } = await params;
   const token = req.headers.get("authorization") ?? "";
+
+  // Forward optional body (e.g. { raw_video_id: "..." })
+  let body: string | undefined;
+  const contentType = req.headers.get("content-type") ?? "";
+  if (contentType.includes("application/json")) {
+    const json = await req.json().catch(() => null);
+    if (json && Object.keys(json).length > 0) body = JSON.stringify(json);
+  }
+
   try {
     const res = await fetch(`${API}/offices/${id}/brain/run`, {
       method: "POST",
-      headers: { Authorization: token },
+      headers: {
+        Authorization: token,
+        ...(body ? { "Content-Type": "application/json" } : {}),
+      },
+      ...(body ? { body } : {}),
     });
     const text = await res.text();
     try { return NextResponse.json(JSON.parse(text), { status: res.status }); }

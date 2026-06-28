@@ -26,6 +26,10 @@ interface RenderProgress {
   item_id: string | null; progress: number; stage: string; status: string;
 }
 
+interface RawVideo {
+  id: string; title: string | null; original_filename: string; status: string; duration_seconds: number | null;
+}
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const PLATFORM_ICONS: Record<string, string> = {
@@ -260,6 +264,10 @@ export default function OfficeDetailPage() {
   const [renderProgresses, setRenderProgresses] = useState<Record<string, RenderProgress>>({});
   const [brainLoading, setBrainLoading] = useState(false);
   const [brainMsg, setBrainMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [brainMode, setBrainMode] = useState<"pure" | "reference">("pure");
+  const [rawVideos, setRawVideos] = useState<RawVideo[]>([]);
+  const [selectedVideoId, setSelectedVideoId] = useState<string>("");
+  const [videosLoading, setVideosLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -318,15 +326,40 @@ export default function OfficeDetailPage() {
     return () => { if (pollingRef.current) clearInterval(pollingRef.current); };
   }, [decisions]);
 
+  async function loadRawVideos() {
+    if (!id) return;
+    setVideosLoading(true);
+    try {
+      const r = await fetch(`/api/raw-videos?office_id=${id}`, { headers });
+      if (r.ok) {
+        const data: RawVideo[] = await r.json();
+        const ready = data.filter(v => v.status === "ready");
+        setRawVideos(ready);
+        if (ready.length > 0 && !selectedVideoId) setSelectedVideoId(ready[0].id);
+      }
+    } catch {} finally { setVideosLoading(false); }
+  }
+
+  async function handleBrainModeChange(mode: "pure" | "reference") {
+    setBrainMode(mode);
+    if (mode === "reference" && rawVideos.length === 0) await loadRawVideos();
+  }
+
   async function runBrain() {
     setBrainLoading(true); setBrainMsg(null);
     try {
+      const body: Record<string, string | null> = {};
+      if (brainMode === "reference" && selectedVideoId) body.raw_video_id = selectedVideoId;
+
       const r = await fetch(`/api/offices/${id}/brain/run`, {
-        method: "POST", headers: { ...headers, "Content-Type": "application/json" },
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
       });
       const data = await r.json();
       if (r.ok) {
-        setBrainMsg({ ok: true, text: `✅ BRAIN concluiu — "${data.content_topic}" via ${data.target_platform}` });
+        const refNote = brainMode === "reference" && selectedVideoId ? " (com referência de vídeo)" : "";
+        setBrainMsg({ ok: true, text: `✅ BRAIN concluiu — "${data.content_topic}" via ${data.target_platform}${refNote}` });
         await loadDecisions(statusFilter);
       } else {
         setBrainMsg({ ok: false, text: `❌ Erro: ${data.detail}` });
@@ -442,7 +475,7 @@ export default function OfficeDetailPage() {
 
         {/* BRAIN Panel */}
         <div className="card-glass rounded-2xl p-6">
-          <div className="flex items-center justify-between flex-wrap gap-4">
+          <div className="flex items-center justify-between flex-wrap gap-4 mb-4">
             <div>
               <div className="flex items-center gap-2 mb-1">
                 <span className="text-lg">🧠</span>
@@ -458,6 +491,68 @@ export default function OfficeDetailPage() {
               {brainLoading ? <><span className="animate-spin">⚙️</span> Pensando...</> : "▶ Executar BRAIN"}
             </button>
           </div>
+
+          {/* Mode selector */}
+          <div className="flex gap-2 mb-3">
+            <button
+              onClick={() => handleBrainModeChange("pure")}
+              className={`px-4 py-2 rounded-xl text-xs font-semibold border transition-all ${
+                brainMode === "pure"
+                  ? "bg-violet-600/30 border-violet-500/60 text-violet-200"
+                  : "bg-white/[0.04] border-white/10 text-white/40 hover:text-white/70"
+              }`}
+            >
+              🤖 IA pura
+            </button>
+            <button
+              onClick={() => handleBrainModeChange("reference")}
+              className={`px-4 py-2 rounded-xl text-xs font-semibold border transition-all ${
+                brainMode === "reference"
+                  ? "bg-violet-600/30 border-violet-500/60 text-violet-200"
+                  : "bg-white/[0.04] border-white/10 text-white/40 hover:text-white/70"
+              }`}
+            >
+              🎬 Com referência
+            </button>
+          </div>
+
+          {/* Mode descriptions + video picker */}
+          {brainMode === "pure" ? (
+            <p className="text-xs text-white/30 mb-1">
+              BRAIN decide o estilo livremente com base em tendências e nicho.
+            </p>
+          ) : (
+            <div className="mt-2">
+              <p className="text-xs text-white/30 mb-2">
+                BRAIN usa o vídeo selecionado como referência de estilo para o RENDERER.
+              </p>
+              {videosLoading ? (
+                <p className="text-xs text-white/30">Carregando biblioteca...</p>
+              ) : rawVideos.length === 0 ? (
+                <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-amber-500/10 border border-amber-500/20">
+                  <span className="text-amber-400 text-xs">⚠️</span>
+                  <span className="text-xs text-amber-300">
+                    Nenhum vídeo pronto na biblioteca.{" "}
+                    <a href="/dashboard/biblioteca" className="underline hover:text-amber-200">Adicionar vídeos →</a>
+                  </span>
+                </div>
+              ) : (
+                <select
+                  value={selectedVideoId}
+                  onChange={e => setSelectedVideoId(e.target.value)}
+                  className="w-full text-sm rounded-xl px-3 py-2"
+                  style={{ background: "#1e293b", color: "#e2e8f0", border: "1px solid #334155" }}
+                >
+                  {rawVideos.map(v => (
+                    <option key={v.id} value={v.id}>
+                      {v.title || v.original_filename}{v.duration_seconds ? ` (${Math.floor(v.duration_seconds / 60)}:${String(Math.floor(v.duration_seconds % 60)).padStart(2, "0")})` : ""}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+          )}
+
           {brainMsg && (
             <div className={`mt-4 px-4 py-3 rounded-xl text-sm border ${brainMsg.ok ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-300" : "bg-red-500/10 border-red-500/30 text-red-300"}`}>
               {brainMsg.text}

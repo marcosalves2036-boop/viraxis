@@ -214,7 +214,7 @@ async def google_callback(
 TIKTOK_AUTH_URL = "https://www.tiktok.com/v2/auth/authorize/"
 TIKTOK_TOKEN_URL = "https://open.tiktokapis.com/v2/oauth/token/"
 TIKTOK_USER_URL = "https://open.tiktokapis.com/v2/user/info/"
-TIKTOK_SCOPES = "user.info.basic,video.upload,video.publish"
+TIKTOK_SCOPES = "user.info.basic,video.upload"
 
 
 @router.get("/tiktok/connect")

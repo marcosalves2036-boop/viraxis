@@ -19,6 +19,7 @@ const NAV = [
   { href: "/dashboard/conteudo", label: "Conteúdo", icon: "📹", exact: false },
   { href: "/dashboard/canais", label: "Canais", icon: "📡", exact: false },
   { href: "/dashboard/analiticos", label: "Analíticos", icon: "📊", exact: false },
+  { href: "/dashboard/biblioteca", label: "Biblioteca", icon: "🎬", exact: false },
   { href: "/dashboard/configuracoes", label: "Configurações", icon: "⚙️", exact: false },
 ];
 

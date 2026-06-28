@@ -78,6 +78,17 @@ class ContentItem(BaseModelMixin, Base):
         comment="[{platform, external_id, published_at, url}]",
     )
 
+    # Camadas de retenção para analytics do Renderer (migration 0007)
+    retention_layer: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}",
+        comment=(
+            "Dados de retenção por camada do roteiro. "
+            "Estrutura: {hook, development, climax, cta} cada um com "
+            "{estimated_retention_pct, duration_target_s, score}. "
+            "Preenchido pelo RENDERER para orientar otimizações."
+        ),
+    )
+
     # Soft delete — PR-1 Fase 2
     deleted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, default=None,

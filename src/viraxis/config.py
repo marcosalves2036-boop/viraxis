@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------ #
     # Banco de dados                                                      #
     # ------------------------------------------------------------------ #
+    # DATABASE_URL (full URL — Render/Neon/etc.)
+    database_url: str = Field(default="", alias="DATABASE_URL")
+
+    # Componentes individuais (fallback / dev local)
     postgres_user: str = "viraxis"
     postgres_password: str = "viraxis_dev"
     postgres_db: str = "viraxis"
@@ -36,6 +40,15 @@ class Settings(BaseSettings):
     @property
     def database_url_async(self) -> str:
         """URL para o driver asyncpg (SQLAlchemy async)."""
+        if self.database_url:
+            url = self.database_url
+            # Converter para asyncpg (postgres:// ou postgresql://)
+            if url.startswith("postgres://"):
+                url = "postgresql+asyncpg://" + url[len("postgres://"):]
+            elif url.startswith("postgresql://"):
+                url = "postgresql+asyncpg://" + url[len("postgresql://"):]
+            return url
+        # Fallback: componentes individuais (dev local)
         u = self.postgres_user
         p = self.postgres_password
         h = self.postgres_host
@@ -47,6 +60,16 @@ class Settings(BaseSettings):
     @property
     def database_url_sync(self) -> str:
         """URL para o driver psycopg2 (Alembic CLI)."""
+        if self.database_url:
+            url = self.database_url
+            if url.startswith("postgres://"):
+                url = "postgresql+psycopg2://" + url[len("postgres://"):]
+            elif url.startswith("postgresql://"):
+                url = "postgresql+psycopg2://" + url[len("postgresql://"):]
+            # Remover sslmode do sync URL (psycopg2 aceita connect_args)
+            import re
+            url = re.sub(r'[?&]sslmode=[^&]*', '', url)
+            return url
         u = self.postgres_user
         p = self.postgres_password
         h = self.postgres_host
@@ -97,15 +120,47 @@ class Settings(BaseSettings):
     # Email — Resend                                                      #
     # ------------------------------------------------------------------ #
     resend_api_key: str = Field(default="", alias="RESEND_API_KEY")
+    skip_email_verification: bool = Field(default=False, alias="SKIP_EMAIL_VERIFICATION")
     frontend_url: str = Field(default="https://viraxis.com.br", alias="FRONTEND_URL")
 
+
     # ------------------------------------------------------------------ #
-    # Cloudflare R2 (legado — mantido para compatibilidade)              #
+    # OAuth — Social Platforms                                            #
+    # ------------------------------------------------------------------ #
+    # Google / YouTube
+    google_oauth_client_id: str = Field(default="", alias="GOOGLE_OAUTH_CLIENT_ID")
+    google_oauth_client_secret: str = Field(default="", alias="GOOGLE_OAUTH_CLIENT_SECRET")
+    google_oauth_redirect_uri: str = Field(
+        default="https://viraxis.onrender.com/auth/google/callback",
+        alias="GOOGLE_OAUTH_REDIRECT_URI",
+    )
+
+    # TikTok
+    tiktok_client_key: str = Field(default="", alias="TIKTOK_CLIENT_KEY")
+    tiktok_client_secret: str = Field(default="", alias="TIKTOK_CLIENT_SECRET")
+    tiktok_redirect_uri: str = Field(
+        default="https://viraxis.onrender.com/auth/tiktok/callback",
+        alias="TIKTOK_REDIRECT_URI",
+    )
+
+    # Meta (Facebook / Instagram)
+    meta_app_id: str = Field(default="", alias="META_APP_ID")
+    meta_app_secret: str = Field(default="", alias="META_APP_SECRET")
+    meta_redirect_uri: str = Field(
+        default="https://viraxis.onrender.com/auth/meta/callback",
+        alias="META_REDIRECT_URI",
+    )
+
+    # URL base do frontend (para redirects pós-OAuth)
+    # ------------------------------------------------------------------ #
+    # Cloudflare R2                                                       #
     # ------------------------------------------------------------------ #
     r2_access_key_id: str = ""
     r2_secret_access_key: str = ""
     r2_bucket_name: str = "viraxis-media"
     r2_endpoint_url: str = ""
+
+
 
     # ------------------------------------------------------------------ #
     # Supabase Storage                                                    #

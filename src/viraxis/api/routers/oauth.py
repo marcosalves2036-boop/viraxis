@@ -23,6 +23,7 @@ from jose import JWTError, jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from viraxis.api.deps import get_session
+from viraxis.infrastructure.database.session import AsyncSessionLocal
 from viraxis.config import settings
 from viraxis.domain.models.social_account import SocialAccount, SocialPlatform
 from viraxis.infrastructure.repositories.social_account import SocialAccountRepository

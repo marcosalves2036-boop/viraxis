@@ -10,6 +10,7 @@ Fluxo:
 import base64
 import hashlib
 import logging
+import asyncio
 import secrets
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode

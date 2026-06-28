@@ -1,86 +1,105 @@
-"""Router de Raw Videos — biblioteca de vídeos brutos por escritório."""
+"""Router de Raw Videos — biblioteca de vídeos brutos por escritório (Supabase Storage)."""
 
 import logging
 import mimetypes
 import uuid
-from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-import boto3
-from botocore.client import Config
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select as sa_select
 
 from viraxis.api.deps import get_current_user, get_session
 from viraxis.config import settings
+from viraxis.domain.models.office import Office
 from viraxis.domain.models.raw_video import RawVideo, RawVideoStatus
 from viraxis.domain.models.user import User
-from sqlalchemy import select as sa_select
-from viraxis.domain.models.office import Office
 from viraxis.infrastructure.repositories.raw_video import RawVideoRepository
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/raw-videos", tags=["raw-videos"])
 
-
-# ── Helpers R2 ─────────────────────────────────────────────────────────────────
-
-def _r2_client():
-    """Retorna cliente boto3 configurado para Cloudflare R2."""
-    return boto3.client(
-        "s3",
-        endpoint_url=settings.r2_endpoint_url or None,
-        aws_access_key_id=settings.r2_access_key_id or None,
-        aws_secret_access_key=settings.r2_secret_access_key or None,
-        config=Config(signature_version="s3v4"),
-        region_name="auto",
-    )
+SUPABASE_BUCKET = "biblioteca-videos"
 
 
-def _r2_configured() -> bool:
-    return bool(
-        settings.r2_endpoint_url
-        and settings.r2_access_key_id
-        and settings.r2_secret_access_key
-    )
+# ── Helpers Supabase Storage ───────────────────────────────────────────────────
+
+def _supabase_configured() -> bool:
+    return bool(settings.supabase_url and settings.supabase_service_role_key)
+
+
+def _storage_headers() -> dict:
+    return {
+        "Authorization": f"Bearer {settings.supabase_service_role_key}",
+        "apikey": settings.supabase_service_role_key,
+    }
+
+
+def _storage_base() -> str:
+    return f"{settings.supabase_url}/storage/v1"
+
+
+async def _upload_to_supabase(path: str, data: bytes, mime_type: str) -> str:
+    """Faz upload de bytes para o Supabase Storage e retorna o storage path."""
+    import httpx
+
+    url = f"{_storage_base()}/object/{SUPABASE_BUCKET}/{path}"
+    headers = {
+        **_storage_headers(),
+        "Content-Type": mime_type,
+        "x-upsert": "false",
+    }
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        resp = await client.post(url, content=data, headers=headers)
+        if resp.status_code not in (200, 201):
+            logger.error("Supabase Storage upload error: %s %s", resp.status_code, resp.text)
+            raise HTTPException(status_code=500, detail=f"Erro no upload: {resp.text}")
+    return path
+
+
+def _signed_url(path: str, expires_in: int = 3600) -> Optional[str]:
+    """Gera URL assinada para download (válida por 1h). Síncrono via requests."""
+    if not _supabase_configured():
+        return None
+    try:
+        import requests
+        url = f"{_storage_base()}/object/sign/{SUPABASE_BUCKET}/{path}"
+        resp = requests.post(
+            url,
+            json={"expiresIn": expires_in},
+            headers=_storage_headers(),
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            signed = data.get("signedURL") or data.get("signedUrl") or ""
+            if signed and not signed.startswith("http"):
+                signed = f"{settings.supabase_url}/storage/v1{signed}"
+            return signed
+    except Exception as e:
+        logger.warning("Erro ao gerar signed URL: %s", e)
+    return None
+
+
+async def _delete_from_supabase(path: str) -> None:
+    """Remove objeto do Supabase Storage."""
+    import httpx
+
+    url = f"{_storage_base()}/object/{SUPABASE_BUCKET}/{path}"
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        await client.delete(url, headers=_storage_headers())
 
 
 # ── Schemas ────────────────────────────────────────────────────────────────────
-
-class PresignRequest(BaseModel):
-    office_id: str
-    filename: str
-    mime_type: str = "video/mp4"
-    file_size_bytes: Optional[int] = None
-
-
-class PresignResponse(BaseModel):
-    upload_url: str
-    r2_key: str
-    expires_in: int = 900  # 15 min
-
-
-class RawVideoRegister(BaseModel):
-    """Chamado após upload direto completar."""
-    office_id: str
-    r2_key: str
-    original_filename: str
-    mime_type: str = "video/mp4"
-    file_size_bytes: Optional[int] = None
-    duration_seconds: Optional[float] = None
-    title: Optional[str] = None
-    description: Optional[str] = None
-    tags: list[str] = []
-
 
 class RawVideoUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     tags: Optional[list[str]] = None
-    status: Optional[str] = None  # "ready" | "failed"
+    status: Optional[str] = None
     duration_seconds: Optional[float] = None
 
 
@@ -88,8 +107,8 @@ class RawVideoResponse(BaseModel):
     id: str
     office_id: str
     original_filename: str
-    r2_key: str
-    r2_url: Optional[str]
+    r2_key: str          # reutilizado: armazena o storage_path no Supabase
+    r2_url: Optional[str]  # signed URL gerada sob demanda
     file_size_bytes: Optional[int]
     duration_seconds: Optional[float]
     mime_type: str
@@ -101,13 +120,13 @@ class RawVideoResponse(BaseModel):
     updated_at: str
 
     @classmethod
-    def from_model(cls, v: RawVideo) -> "RawVideoResponse":
+    def from_model(cls, v: RawVideo, signed_url: Optional[str] = None) -> "RawVideoResponse":
         return cls(
             id=str(v.id),
             office_id=str(v.office_id),
             original_filename=v.original_filename,
             r2_key=v.r2_key,
-            r2_url=v.r2_url,
+            r2_url=signed_url or v.r2_url,
             file_size_bytes=v.file_size_bytes,
             duration_seconds=v.duration_seconds,
             mime_type=v.mime_type,
@@ -122,119 +141,95 @@ class RawVideoResponse(BaseModel):
 
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 
-@router.post("/presign", response_model=PresignResponse)
-async def get_presigned_upload_url(
-    body: PresignRequest,
+@router.post("/upload", response_model=RawVideoResponse, status_code=status.HTTP_201_CREATED)
+async def upload_video(
+    file: UploadFile = File(...),
+    office_id: str = Form(...),
+    title: Optional[str] = Form(None),
+    description: Optional[str] = Form(None),
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     """
-    Gera URL presigned para upload direto ao R2.
-    O browser faz PUT direto no R2, sem passar pelo servidor.
+    Recebe vídeo via multipart, faz upload para o Supabase Storage
+    e registra metadados no banco. Retorna o vídeo criado.
     """
-    if not _r2_configured():
+    if not _supabase_configured():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Armazenamento R2 não configurado. Contate o suporte.",
+            detail="Armazenamento não configurado. Contate o suporte.",
         )
 
     # Verificar que o office pertence ao usuário
     result = await session.execute(
-        sa_select(Office).where(Office.id == UUID(body.office_id), Office.user_id == current_user.id)
+        sa_select(Office).where(
+            Office.id == UUID(office_id),
+            Office.user_id == current_user.id,
+        )
     )
     office = result.scalar_one_or_none()
     if not office:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Escritório não encontrado.")
 
-    # Gerar r2_key única
-    ext = mimetypes.guess_extension(body.mime_type) or ".mp4"
-    r2_key = f"raw-videos/{current_user.id}/{body.office_id}/{uuid.uuid4()}{ext}"
+    # Ler arquivo em memória
+    data = await file.read()
+    file_size = len(data)
 
-    try:
-        s3 = _r2_client()
-        upload_url = s3.generate_presigned_url(
-            "put_object",
-            Params={
-                "Bucket": settings.r2_bucket_name,
-                "Key": r2_key,
-                "ContentType": body.mime_type,
-            },
-            ExpiresIn=900,
-        )
-    except Exception as e:
-        logger.error("Erro ao gerar presigned URL: %s", e)
-        raise HTTPException(status_code=500, detail="Erro ao gerar URL de upload.")
+    # Inferir mime_type
+    mime_type = file.content_type or mimetypes.guess_type(file.filename or "")[0] or "video/mp4"
+    ext = mimetypes.guess_extension(mime_type) or ".mp4"
+    if ext == ".mp4v":
+        ext = ".mp4"
 
-    return PresignResponse(upload_url=upload_url, r2_key=r2_key)
+    # Gerar storage path único
+    storage_path = f"{current_user.id}/{office_id}/{uuid.uuid4()}{ext}"
 
+    # Upload para Supabase Storage
+    await _upload_to_supabase(storage_path, data, mime_type)
 
-@router.post("", response_model=RawVideoResponse, status_code=status.HTTP_201_CREATED)
-async def register_video(
-    body: RawVideoRegister,
-    current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-):
-    """
-    Registra metadados de um vídeo após o upload direto ao R2 completar.
-    O status inicial é 'ready' se o upload foi bem-sucedido.
-    """
-    result = await session.execute(
-        sa_select(Office).where(Office.id == UUID(body.office_id), Office.user_id == current_user.id)
-    )
-    office = result.scalar_one_or_none()
-    if not office:
-        raise HTTPException(status_code=404, detail="Escritório não encontrado.")
+    # Gerar signed URL inicial (1h)
+    signed = _signed_url(storage_path)
 
+    # Registrar no banco
     repo = RawVideoRepository(session)
-
-    # Verificar duplicata por r2_key
-    existing = await repo.get_by_r2_key(body.r2_key)
-    if existing:
-        raise HTTPException(status_code=409, detail="Vídeo já registrado.")
-
-    # Construir URL pública (se R2 configurado com domínio público)
-    r2_url = None
-    if settings.r2_endpoint_url and body.r2_key:
-        r2_url = f"{settings.r2_endpoint_url}/{settings.r2_bucket_name}/{body.r2_key}"
-
     video = await repo.create(
-        office_id=UUID(body.office_id),
+        office_id=UUID(office_id),
         user_id=current_user.id,
-        original_filename=body.original_filename,
-        r2_key=body.r2_key,
-        r2_url=r2_url,
-        file_size_bytes=body.file_size_bytes,
-        duration_seconds=body.duration_seconds,
-        mime_type=body.mime_type,
+        original_filename=file.filename or "video",
+        r2_key=storage_path,       # reutilizamos o campo r2_key para o storage_path
+        r2_url=signed,
+        file_size_bytes=file_size,
+        duration_seconds=None,
+        mime_type=mime_type,
         status=RawVideoStatus.ready,
-        title=body.title,
-        description=body.description,
-        tags=body.tags,
+        title=title,
+        description=description,
+        tags=[],
     )
-
     await session.commit()
-    return RawVideoResponse.from_model(video)
+    return RawVideoResponse.from_model(video, signed_url=signed)
 
 
 @router.get("", response_model=list[RawVideoResponse])
 async def list_videos(
-    office_id: str = Query(..., description="ID do escritório"),
+    office_id: str = Query(...),
     status_filter: Optional[str] = Query(None, alias="status"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    """Lista vídeos brutos de um escritório."""
+    """Lista vídeos brutos de um escritório com signed URLs frescas."""
     result = await session.execute(
-        sa_select(Office).where(Office.id == UUID(office_id), Office.user_id == current_user.id)
+        sa_select(Office).where(
+            Office.id == UUID(office_id),
+            Office.user_id == current_user.id,
+        )
     )
-    office = result.scalar_one_or_none()
-    if not office:
+    if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Escritório não encontrado.")
 
     repo = RawVideoRepository(session)
-
     status_enum = None
     if status_filter:
         try:
@@ -242,13 +237,14 @@ async def list_videos(
         except ValueError:
             raise HTTPException(status_code=422, detail=f"Status inválido: {status_filter}")
 
-    videos = await repo.list_by_office(
-        UUID(office_id),
-        status=status_enum,
-        limit=limit,
-        offset=offset,
-    )
-    return [RawVideoResponse.from_model(v) for v in videos]
+    videos = await repo.list_by_office(UUID(office_id), status=status_enum, limit=limit, offset=offset)
+
+    # Gerar signed URLs em lote (síncrono, mas rápido)
+    result_list = []
+    for v in videos:
+        signed = _signed_url(v.r2_key) if _supabase_configured() and v.r2_key else None
+        result_list.append(RawVideoResponse.from_model(v, signed_url=signed))
+    return result_list
 
 
 @router.get("/{video_id}", response_model=RawVideoResponse)
@@ -257,12 +253,12 @@ async def get_video(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    """Retorna metadados de um vídeo específico."""
     repo = RawVideoRepository(session)
     video = await repo.get(UUID(video_id))
     if not video or video.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Vídeo não encontrado.")
-    return RawVideoResponse.from_model(video)
+    signed = _signed_url(video.r2_key) if _supabase_configured() and video.r2_key else None
+    return RawVideoResponse.from_model(video, signed_url=signed)
 
 
 @router.patch("/{video_id}", response_model=RawVideoResponse)
@@ -272,7 +268,6 @@ async def update_video(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    """Atualiza metadados (title, description, tags, status, duration)."""
     repo = RawVideoRepository(session)
     video = await repo.get(UUID(video_id))
     if not video or video.user_id != current_user.id:
@@ -294,7 +289,8 @@ async def update_video(
 
     await repo.save(video)
     await session.commit()
-    return RawVideoResponse.from_model(video)
+    signed = _signed_url(video.r2_key) if _supabase_configured() and video.r2_key else None
+    return RawVideoResponse.from_model(video, signed_url=signed)
 
 
 @router.delete("/{video_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -303,11 +299,17 @@ async def delete_video(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    """Remove o registro do vídeo (não deleta do R2 — deve ser feito manualmente)."""
     repo = RawVideoRepository(session)
     video = await repo.get(UUID(video_id))
     if not video or video.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Vídeo não encontrado.")
+
+    # Deletar do Supabase Storage também
+    if video.r2_key and _supabase_configured():
+        try:
+            await _delete_from_supabase(video.r2_key)
+        except Exception as e:
+            logger.warning("Erro ao deletar do Supabase Storage: %s", e)
 
     await repo.delete(video)
     await session.commit()

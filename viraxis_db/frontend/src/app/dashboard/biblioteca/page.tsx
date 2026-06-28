@@ -23,10 +23,10 @@ function BibliotecaContent() {
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [editTags, setEditTags] = useState("");
-  const [r2Warning, setR2Warning] = useState(false);
 
   useEffect(() => {
     const token = localStorage.getItem("viraxis_token");
@@ -59,30 +59,38 @@ function BibliotecaContent() {
     if (!file || !selectedOfficeId) return;
     const token = localStorage.getItem("viraxis_token");
     if (!token) return;
-    setUploading(true); setUploadError(null); setR2Warning(false);
+    setUploading(true); setUploadError(null); setUploadProgress(0);
     try {
-      const presignRes = await fetch("/api/raw-videos/presign", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ office_id: selectedOfficeId, filename: file.name, content_type: file.type }),
+      // Upload multipart direto para o backend → Supabase Storage
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("office_id", selectedOfficeId);
+
+      // Usar XMLHttpRequest para mostrar progresso
+      const result = await new Promise<Response>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", "/api/raw-videos/upload");
+        xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+        xhr.upload.onprogress = (ev) => {
+          if (ev.lengthComputable) setUploadProgress(Math.round((ev.loaded / ev.total) * 100));
+        };
+        xhr.onload = () => {
+          const resp = new Response(xhr.responseText, { status: xhr.status, headers: { "Content-Type": "application/json" } });
+          resolve(resp);
+        };
+        xhr.onerror = () => reject(new Error("Erro de rede durante upload"));
+        xhr.send(formData);
       });
-      const presignData = await presignRes.json();
-      if (!presignRes.ok) {
-        if (presignRes.status === 503 || JSON.stringify(presignData).includes("R2")) { setR2Warning(true); return; }
-        throw new Error(presignData?.detail || "Erro ao gerar URL de upload");
+
+      if (!result.ok) {
+        const data = await result.json().catch(() => ({}));
+        if (result.status === 503) throw new Error("Armazenamento não configurado. Contate o suporte.");
+        throw new Error((data as {detail?: string}).detail || "Erro ao fazer upload");
       }
-      const uploadRes = await fetch(presignData.upload_url, { method: "PUT", headers: { "Content-Type": file.type }, body: file });
-      if (!uploadRes.ok) throw new Error("Falha no upload para armazenamento");
-      const confirmRes = await fetch("/api/raw-videos", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ office_id: selectedOfficeId, r2_key: presignData.r2_key, original_filename: file.name }),
-      });
-      if (!confirmRes.ok) throw new Error("Erro ao registrar vídeo");
       loadVideos();
     } catch (err: unknown) {
       setUploadError(err instanceof Error ? err.message : "Erro desconhecido");
-    } finally { setUploading(false); e.target.value = ""; }
+    } finally { setUploading(false); setUploadProgress(null); e.target.value = ""; }
   }
 
   async function handleDelete(id: string) {
@@ -123,9 +131,14 @@ function BibliotecaContent() {
         </label>
       </div>
 
-      {r2Warning && (
-        <div style={{ background: "#431407", border: "1px solid #ea580c", borderRadius: 8, padding: 16, marginBottom: 20, color: "#fed7aa" }}>
-          ⚠️ <strong>Armazenamento R2 não configurado.</strong> Configure <code>R2_ACCESS_KEY_ID</code>, <code>R2_SECRET_ACCESS_KEY</code> e <code>R2_ENDPOINT_URL</code> no Render para habilitar uploads.
+      {uploadProgress !== null && uploading && (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: "#94a3b8", marginBottom: 4 }}>
+            <span>Enviando vídeo...</span><span>{uploadProgress}%</span>
+          </div>
+          <div style={{ background: "#1e293b", borderRadius: 999, height: 6 }}>
+            <div style={{ background: "#7c3aed", borderRadius: 999, height: 6, width: `${uploadProgress}%`, transition: "width 0.2s" }} />
+          </div>
         </div>
       )}
       {uploadError && (
@@ -177,18 +190,4 @@ function BibliotecaContent() {
                   </div>
                 </div>
               )}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-export default function BibliotecaPage() {
-  return (
-    <Suspense fallback={<div style={{ padding: 32, color: "#94a3b8" }}>Carregando biblioteca...</div>}>
-      <BibliotecaContent />
-    </Suspense>
-  );
-}
+      

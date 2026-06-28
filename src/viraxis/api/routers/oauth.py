@@ -224,6 +224,17 @@ async def tiktok_connect(
 ):
     user_id = _verify_access_token(access_token)
     code_verifier, code_challenge = _pkce_pair()
+    # Verificar consistência PKCE localmente antes de usar
+    import hashlib as _hashlib
+    import base64 as _base64
+    _expected = _base64.urlsafe_b64encode(
+        _hashlib.sha256(code_verifier.encode()).digest()
+    ).rstrip(b"=").decode()
+    if _expected != code_challenge:
+        logger.error("PKCE mismatch na geração! verifier=%s challenge=%s expected=%s",
+                     code_verifier, code_challenge, _expected)
+    else:
+        logger.info("TikTok connect: PKCE ok | verifier=%s | challenge=%s", code_verifier, code_challenge)
     state = _create_state(user_id, office_id, code_verifier)
     params = {
         "client_key": settings.tiktok_client_key,
@@ -273,11 +284,16 @@ async def tiktok_callback(
                 return _frontend_redirect("error", "tiktok", "token_exchange_failed", office_id)
 
             resp_json = token_resp.json()
-            # TikTok v2 sandbox pode retornar {"data": {...}} ou o objeto direto
-            # Verificar se há erro no corpo mesmo com HTTP 200
-            if resp_json.get("error", {}).get("code", "ok") != "ok":
-                err_msg = resp_json.get("error", {}).get("message", "token_exchange_failed")
-                logger.error("TikTok token error in body: %s", resp_json)
+            # TikTok sandbox retorna formato FLAT: {"error":"invalid_grant","error_description":"..."}
+            # (não o formato aninhado {"data":{}, "error":{"code":"ok"}})
+            error_val = resp_json.get("error")
+            if error_val and isinstance(error_val, str) and error_val != "ok":
+                err_msg = resp_json.get("error_description") or error_val
+                logger.error("TikTok token error (flat): error=%s msg=%s", error_val, err_msg)
+                return _frontend_redirect("error", "tiktok", err_msg, office_id)
+            elif isinstance(error_val, dict) and error_val.get("code", "ok") != "ok":
+                err_msg = error_val.get("message", "token_exchange_failed")
+                logger.error("TikTok token error (nested): %s", resp_json)
                 return _frontend_redirect("error", "tiktok", err_msg, office_id)
 
             token_data = resp_json.get("data", resp_json)

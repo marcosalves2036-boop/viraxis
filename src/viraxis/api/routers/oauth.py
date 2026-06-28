@@ -251,22 +251,17 @@ async def tiktok_callback(
     office_id = state_data.get("office_id")
 
     try:
-        import base64 as _b64
-        _creds = _b64.b64encode(
-            f"{settings.tiktok_client_key}:{settings.tiktok_client_secret}".encode()
-        ).decode()
         async with httpx.AsyncClient(timeout=15) as client:
             token_resp = await client.post(
                 TIKTOK_TOKEN_URL,
                 data={
+                    "client_key": settings.tiktok_client_key,
+                    "client_secret": settings.tiktok_client_secret,
                     "code": code,
                     "grant_type": "authorization_code",
                     "redirect_uri": settings.tiktok_redirect_uri,
                 },
-                headers={
-                    "Content-Type": "application/x-www-form-urlencoded",
-                    "Authorization": f"Basic {_creds}",
-                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
             logger.info("TikTok token exchange status=%s body=%s", token_resp.status_code, token_resp.text[:500])
             if token_resp.status_code != 200:

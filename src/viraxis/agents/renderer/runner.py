@@ -24,6 +24,7 @@ from viraxis.agents.renderer.tasks import create_render_task
 from viraxis.domain.models.content_decision import ContentDecision, DecisionStatus
 from viraxis.domain.models.content_item import ContentItem, ContentStatus
 from viraxis.domain.models.trend_snapshot import TrendSnapshot
+from viraxis.domain.models.raw_video import RawVideo
 from viraxis.infrastructure.database.session import AsyncSessionLocal
 from viraxis.infrastructure.repositories.agent_run_log import AgentRunLogRepository
 from viraxis.infrastructure.repositories.niche_profile import NicheProfileRepository
@@ -104,6 +105,26 @@ async def run_renderer(
         trend_signals = latest_trend.processed_signals if latest_trend else {}
 
         # ---- 4. Construir RendererInput ----
+        # ---- v2: Buscar vídeo de referência se decision tiver raw_video_id ----
+        reference_video_ctx: dict | None = None
+        if decision.raw_video_id:
+            rv_result = await session.execute(
+                select(RawVideo).where(RawVideo.id == decision.raw_video_id)
+            )
+            raw_video = rv_result.scalar_one_or_none()
+            if raw_video:
+                reference_video_ctx = {
+                    "title": raw_video.title or raw_video.original_filename,
+                    "tags": raw_video.tags or [],
+                    "description": raw_video.description or "",
+                    "duration_seconds": raw_video.duration_seconds,
+                }
+                logger.info(
+                    "RENDERER v2: vídeo de referência carregado | id=%s title=%.60s",
+                    decision.raw_video_id,
+                    reference_video_ctx["title"],
+                )
+
         renderer_input = RendererInput(
             decision_type=decision.decision_type.value,
             selected_topic=decision.selected_topic or "",
@@ -116,6 +137,7 @@ async def run_renderer(
             trend_keywords=trend_signals.get("keywords", [])[:8],
             trend_hook_pattern=trend_signals.get("hook_pattern"),
             trend_summary=trend_signals.get("summary"),
+            reference_video=reference_video_ctx,
         )
 
         # ---- 5. Criar AgentRunLog ----

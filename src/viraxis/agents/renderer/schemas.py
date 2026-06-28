@@ -25,6 +25,15 @@ class RendererInput(BaseModel):
     trend_hook_pattern: str | None = None
     trend_summary: str | None = None
 
+    # Vídeo de referência (opcional) — BRAIN pode vincular um raw_video para estilo
+    reference_video: dict | None = Field(
+        default=None,
+        description=(
+            "Contexto do vídeo bruto de referência: {title, tags, description, duration_seconds}. "
+            "O RENDERER deve usar como base de estilo narrativo, ritmo e vocabulário."
+        ),
+    )
+
 
 class ScriptSection(BaseModel):
     """Uma seção do roteiro de vídeo."""

@@ -82,6 +82,8 @@ ADAPTAÇÃO DE PLATAFORMA:
 {platform_hint}
 {trend_context}
 
+{ref_video_context}
+
 ESTRUTURA OBRIGATÓRIA (4 seções):
 
 1. HOOK (3-8s):
@@ -103,6 +105,26 @@ ENTREGUE:
 - Duração total estimada
 - Descrição das adaptações feitas para {platform}
 - Score de confiança (0.0-1.0) na qualidade do roteiro
+""".strip()
+
+    # Contexto de vídeo de referência (v2) — para coerência de estilo
+    ref_video_context = ""
+    if renderer_input.reference_video:
+        rv = renderer_input.reference_video
+        title = rv.get("title", "sem título")
+        tags = ", ".join(rv.get("tags", [])) or "sem tags"
+        desc = rv.get("description") or ""
+        dur = rv.get("duration_seconds")
+        dur_str = f"{int(dur)}s" if dur else "desconhecida"
+        ref_video_context = f"""
+VÍDEO DE REFERÊNCIA (use como base de estilo):
+- Título: {title}
+- Duração: {dur_str}
+- Tags: {tags}
+{f"- Descrição: {desc[:300]}" if desc else ""}
+
+Analise o estilo narrativo, vocabulário e tom emocional deste vídeo e aplique
+ao roteiro gerado. O resultado deve soar como continuação natural deste canal.
 """.strip()
 
     return Task(

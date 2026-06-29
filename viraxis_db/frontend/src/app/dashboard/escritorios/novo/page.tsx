@@ -23,6 +23,7 @@ export default function NovoEscritorioPage() {
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [retrying, setRetrying] = useState(false);
   const [form, setForm] = useState({
     name: "",
     niche: "",
@@ -44,17 +45,37 @@ export default function NovoEscritorioPage() {
   async function handleSubmit() {
     setLoading(true);
     setError("");
+    setRetrying(false);
+    const payload = {
+      name: form.name,
+      niche: form.custom_niche || form.niche,
+      platforms: form.platforms,
+      target_audience: form.target_audience,
+      content_style: form.content_style,
+    };
     try {
-      const data = await offices.create({
-        name: form.name,
-        niche: form.custom_niche || form.niche,
-        platforms: form.platforms,
-        target_audience: form.target_audience,
-        content_style: form.content_style,
-      });
+      const data = await offices.create(payload);
       router.push(`/dashboard/canais?office_id=${data.id}`);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Erro desconhecido");
+      const msg = e instanceof Error ? e.message : "Erro desconhecido";
+      if (msg === "Failed to fetch" || msg.toLowerCase().includes("network")) {
+        // Render acordando — tentar novamente após 8s
+        setRetrying(true);
+        setError("");
+        await new Promise(r => setTimeout(r, 8000));
+        try {
+          const data = await offices.create(payload);
+          router.push(`/dashboard/canais?office_id=${data.id}`);
+          return;
+        } catch (e2: unknown) {
+          const msg2 = e2 instanceof Error ? e2.message : "Erro desconhecido";
+          setError(msg2 === "Failed to fetch" ? "Servidor demorou a responder. Aguarde 30s e tente novamente." : msg2);
+        } finally {
+          setRetrying(false);
+        }
+      } else {
+        setError(msg);
+      }
     } finally {
       setLoading(false);
     }
@@ -222,7 +243,7 @@ export default function NovoEscritorioPage() {
               disabled={loading || form.platforms.length === 0}
               className="flex-1 py-3 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:bg-violet-900 disabled:cursor-not-allowed text-white text-sm font-semibold transition-colors"
             >
-              {loading ? "Criando..." : "Criar Escritório 🚀"}
+              {retrying ? "Acordando servidor..." : loading ? "Criando..." : "Criar Escritório 🚀"}
             </button>
           )}
         </div>

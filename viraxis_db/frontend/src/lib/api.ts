@@ -79,6 +79,7 @@ export interface CreateOfficeBody {
   niche: string
   platforms?: string[]
   target_audience?: string
+  content_style?: string
 }
 
 export const offices = {

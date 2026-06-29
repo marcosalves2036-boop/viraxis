@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { offices } from "@/lib/api";
 import Link from "next/link";
 
 const NICHES = [
@@ -43,21 +44,14 @@ export default function NovoEscritorioPage() {
   async function handleSubmit() {
     setLoading(true);
     setError("");
-    const token = localStorage.getItem("viraxis_token");
     try {
-      const res = await fetch("/api/offices", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          name: form.name,
-          niche: form.custom_niche || form.niche,
-          platforms: form.platforms,
-          target_audience: form.target_audience,
-          content_style: form.content_style,
-        }),
+      const data = await offices.create({
+        name: form.name,
+        niche: form.custom_niche || form.niche,
+        platforms: form.platforms,
+        target_audience: form.target_audience,
+        content_style: form.content_style,
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail ?? "Erro ao criar escritório");
       router.push(`/dashboard/canais?office_id=${data.id}`);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Erro desconhecido");

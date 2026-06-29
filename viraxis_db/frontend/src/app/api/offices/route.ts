@@ -9,12 +9,19 @@ async function proxy(req: NextRequest, path: string, method: string, withBody = 
     headers: { "Content-Type": "application/json", Authorization: token },
   };
   if (withBody) opts.body = JSON.stringify(await req.json());
-  const res = await fetch(`${API}${path}`, opts);
-  const text = await res.text();
   try {
-    return NextResponse.json(JSON.parse(text), { status: res.status });
+    const res = await fetch(`${API}${path}`, opts);
+    const text = await res.text();
+    try {
+      return NextResponse.json(JSON.parse(text), { status: res.status });
+    } catch {
+      return NextResponse.json({ detail: text }, { status: res.status });
+    }
   } catch {
-    return NextResponse.json({ detail: text }, { status: res.status });
+    return NextResponse.json(
+      { detail: "Servidor temporariamente indisponível. Aguarde 30 segundos e tente novamente." },
+      { status: 503 }
+    );
   }
 }
 

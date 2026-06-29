@@ -242,7 +242,7 @@ async def list_videos(
     # Gerar signed URLs em paralelo (async, 24h de validade)
     import asyncio
     async def _get_signed(v: RawVideo):
-        signed = await _signed_url(v.r2_key) if _supabase_configured() and v.r2_key else None
+        signed = await _signed_url(v.r2_key) if (_supabase_configured() and v.r2_key) else None
         return RawVideoResponse.from_model(v, signed_url=signed)
 
     result_list = await asyncio.gather(*[_get_signed(v) for v in videos])
@@ -259,7 +259,7 @@ async def get_video(
     video = await repo.get(UUID(video_id))
     if not video or video.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Vídeo não encontrado.")
-    signed = await _signed_url(video.r2_key) if _supabase_configured() and video.r2_key else None
+    signed = await _signed_url(video.r2_key) if (_supabase_configured() and video.r2_key) else None
     return RawVideoResponse.from_model(video, signed_url=signed)
 
 
@@ -291,7 +291,7 @@ async def update_video(
 
     await repo.save(video)
     await session.commit()
-    signed = await _signed_url(video.r2_key) if _supabase_configured() and video.r2_key else None
+    signed = await _signed_url(video.r2_key) if (_supabase_configured() and video.r2_key) else None
     return RawVideoResponse.from_model(video, signed_url=signed)
 
 
@@ -309,4 +309,9 @@ async def delete_video(
     # Deletar do Supabase Storage também
     if video.r2_key and _supabase_configured():
         try:
-            await _delete_from_supabase(v
+            await _delete_from_supabase(video.r2_key)
+        except Exception as e:
+            logger.warning("Erro ao deletar do Supabase Storage: %s", e)
+
+    await repo.delete(video)
+    await session.commit()

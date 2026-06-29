@@ -190,13 +190,18 @@ export const rawVideos = {
   delete: (id: string) => req<void>('DELETE', `/raw-videos/${id}`),
 }
 
-// ── Compat aliases (used by login/cadastro/verify-email pages) ────────────────
+// ── Compat aliases (usados pelas páginas login/cadastro/verify-email/layout/conteudo) ─
 
-// auth.save() — persiste o access_token retornado pelo login
-;(auth as typeof auth & { save: (t: TokenResponse) => void }).save =
-  (t: TokenResponse) => setToken(t.access_token)
-
-// api — alias de auth para compatibilidade com páginas legadas
-export const api = auth as typeof auth & {
-  save: (t: TokenResponse) => void
+// Adiciona auth.getToken / auth.clear / auth.save para compatibilidade
+// com páginas que importam apenas { auth } de "@/lib/api"
+type AuthCompat = typeof auth & {
+  getToken: () => string | null
+  clear:    () => void
+  save:     (t: TokenResponse) => void
 }
+;(auth as AuthCompat).getToken = getToken
+;(auth as AuthCompat).clear    = clearToken
+;(auth as AuthCompat).save     = (t: TokenResponse) => setToken(t.access_token)
+
+// api = alias de auth (usado em cadastro/login/verify-email via `import { api }`)
+export const api = auth as AuthCompat

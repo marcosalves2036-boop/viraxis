@@ -77,7 +77,7 @@ export interface OfficeResponse {
 export interface CreateOfficeBody {
   name: string
   niche: string
-  content_style?: Record<string, string>
+  platforms?: string[]
   target_audience?: string
 }
 

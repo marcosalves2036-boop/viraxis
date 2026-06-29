@@ -47,7 +47,7 @@ export default function DashboardPage() {
         name,
         niche,
         target_audience: audience,
-        content_style: { primary_platform: platform.toLowerCase().replace(' ', '_') },
+        platforms: [platform],
       })
       setShowForm(false)
       setName(''); setAudience('')

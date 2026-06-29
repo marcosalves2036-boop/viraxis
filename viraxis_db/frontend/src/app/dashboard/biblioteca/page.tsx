@@ -125,7 +125,6 @@ function BibliotecaContent() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div>
         <h1 className="text-2xl font-black text-white">Biblioteca</h1>
         <p className="text-white/40 text-sm mt-1">
@@ -133,7 +132,6 @@ function BibliotecaContent() {
         </p>
       </div>
 
-      {/* Controles */}
       <div className="flex flex-wrap gap-3 items-center">
         <select
           value={selectedOfficeId}
@@ -144,16 +142,12 @@ function BibliotecaContent() {
           {offices.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
         </select>
 
-        <label className={`px-4 py-2 rounded-xl text-sm font-semibold transition-colors cursor-pointer select-none
-          ${uploading || !selectedOfficeId
-            ? "bg-violet-900 text-white/40 cursor-not-allowed"
-            : "bg-violet-600 hover:bg-violet-500 text-white"}`}>
+        <label className={`px-4 py-2 rounded-xl text-sm font-semibold transition-colors cursor-pointer select-none ${uploading || !selectedOfficeId ? "bg-violet-900 text-white/40 cursor-not-allowed" : "bg-violet-600 hover:bg-violet-500 text-white"}`}>
           {uploading ? "Enviando..." : "+ Adicionar vídeo"}
           <input type="file" accept="video/*" onChange={handleUpload} className="hidden" disabled={uploading || !selectedOfficeId} />
         </label>
       </div>
 
-      {/* Barra de progresso de upload */}
       {uploadProgress !== null && uploading && (
         <div className="card-glass rounded-xl p-4 space-y-2">
           <div className="flex justify-between text-xs text-white/50">
@@ -161,22 +155,17 @@ function BibliotecaContent() {
             <span>{uploadProgress}%</span>
           </div>
           <div className="bg-white/10 rounded-full h-1.5">
-            <div
-              className="bg-violet-500 rounded-full h-1.5 transition-all duration-200"
-              style={{ width: `${uploadProgress}%` }}
-            />
+            <div className="bg-violet-500 rounded-full h-1.5 transition-all duration-200" style={{ width: `${uploadProgress}%` }} />
           </div>
         </div>
       )}
 
-      {/* Erro de upload */}
       {uploadError && (
         <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3 text-sm text-red-300">
           {uploadError}
         </div>
       )}
 
-      {/* Lista de vídeos */}
       {loading ? (
         <div className="text-white/40 text-sm py-8 text-center">Carregando...</div>
       ) : videos.length === 0 ? (
@@ -190,7 +179,6 @@ function BibliotecaContent() {
           {videos.map(v => (
             <div key={v.id} className="card-glass rounded-2xl p-4">
               {editingId === v.id ? (
-                /* Modo edição */
                 <div className="space-y-3">
                   <input
                     value={editTitle}
@@ -205,50 +193,55 @@ function BibliotecaContent() {
                     className="w-full bg-white/[0.06] border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder-white/20 focus:outline-none focus:border-violet-500/60 transition-colors"
                   />
                   <div className="flex gap-2">
-                    <button
-                      onClick={() => handleSaveEdit(v.id)}
-                      className="px-4 py-2 bg-green-600 hover:bg-green-500 text-white rounded-xl text-sm font-semibold transition-colors"
-                    >
-                      Salvar
-                    </button>
-                    <button
-                      onClick={() => setEditingId(null)}
-                      className="px-4 py-2 bg-white/[0.06] hover:bg-white/10 text-white/60 rounded-xl text-sm transition-colors"
-                    >
-                      Cancelar
-                    </button>
+                    <button onClick={() => handleSaveEdit(v.id)} className="px-4 py-2 bg-green-600 hover:bg-green-500 text-white rounded-xl text-sm font-semibold transition-colors">Salvar</button>
+                    <button onClick={() => setEditingId(null)} className="px-4 py-2 bg-white/[0.06] hover:bg-white/10 text-white/60 rounded-xl text-sm transition-colors">Cancelar</button>
                   </div>
                 </div>
               ) : (
-                /* Modo visualização */
                 <div className="flex justify-between items-start gap-4 flex-wrap">
                   <div className="flex-1 min-w-0">
-                    {/* Título + badge de status */}
                     <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-                      <span className="font-semibold text-white text-sm truncate">
-                        {v.title || v.original_filename}
-                      </span>
+                      <span className="font-semibold text-white text-sm truncate">{v.title || v.original_filename}</span>
                       <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${STATUS_CLASS[v.status] || STATUS_CLASS.pending}`}>
                         {STATUS_LABEL[v.status] || v.status}
                       </span>
                     </div>
-                    {/* Metadados */}
                     <div className="flex gap-4 text-xs text-white/40 flex-wrap">
                       <span>⏱ {fmtDuration(v.duration_seconds)}</span>
                       <span>📅 {new Date(v.created_at).toLocaleDateString("pt-BR")}</span>
-                      {v.tags?.length > 0 && (
-                        <span>🏷 {v.tags.slice(0, 4).join(", ")}{v.tags.length > 4 ? "…" : ""}</span>
-                      )}
+                      {v.tags?.length > 0 && <span>🏷 {v.tags.slice(0, 4).join(", ")}{v.tags.length > 4 ? "…" : ""}</span>}
                     </div>
                     {v.description && (
-                      <p className="text-xs text-white/30 mt-2 truncate">
-                        {v.description.slice(0, 120)}{v.description.length > 120 ? "…" : ""}
-                      </p>
+                      <p className="text-xs text-white/30 mt-2 truncate">{v.description.slice(0, 120)}{v.description.length > 120 ? "…" : ""}</p>
                     )}
                   </div>
-
-                  {/* Ações */}
                   <div className="flex gap-2 flex-shrink-0">
                     {v.r2_url && (
-                      <a
-        
+                      <a href={v.r2_url} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 bg-white/[0.06] hover:bg-white/10 border border-white/10 text-white/60 rounded-xl text-xs transition-colors">
+                        ▶ Ver
+                      </a>
+                    )}
+                    <button onClick={() => startEdit(v)} className="px-3 py-1.5 bg-white/[0.06] hover:bg-white/10 border border-white/10 text-white/60 rounded-xl text-xs transition-colors">
+                      ✏️ Editar
+                    </button>
+                    <button onClick={() => handleDelete(v.id)} className="px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 rounded-xl text-xs transition-colors">
+                      🗑
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function BibliotecaPage() {
+  return (
+    <Suspense fallback={<div className="text-white/40 text-sm p-8">Carregando biblioteca...</div>}>
+      <BibliotecaContent />
+    </Suspense>
+  );
+}

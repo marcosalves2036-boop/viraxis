@@ -3,7 +3,7 @@
 import enum
 import uuid
 
-from sqlalchemy import Enum, ForeignKey, Index, String, UniqueConstraint
+from sqlalchemy import Enum, ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -31,7 +31,7 @@ class Office(BaseModelMixin, Base):
         nullable=False,
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    niche: Mapped[str] = mapped_column(String(128), nullable=False)
+    niche: Mapped[str] = mapped_column(Text(), nullable=False)
     status: Mapped[OfficeStatus] = mapped_column(
         Enum(OfficeStatus, name="officestatus", create_constraint=True),
         nullable=False,

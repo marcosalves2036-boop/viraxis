@@ -2,7 +2,7 @@
 
 import uuid
 
-from sqlalchemy import ForeignKey, Index, String, Text, UniqueConstraint
+from sqlalchemy import ForeignKey, Index, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -36,7 +36,7 @@ class NicheProfile(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
     )
-    niche_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    niche_name: Mapped[str] = mapped_column(Text(), nullable=False)
 
     # JSONB: permite evolução de schema sem migrations para dados flexíveis
     target_platforms: Mapped[list] = mapped_column(

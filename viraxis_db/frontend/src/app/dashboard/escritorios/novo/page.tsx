@@ -18,12 +18,13 @@ const PLATFORMS = [
   { id: "twitter", label: "Twitter/X", icon: "🐦" },
 ];
 
+const MAX_CHARS = 500;
+
 export default function NovoEscritorioPage() {
   const router = useRouter();
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [retrying, setRetrying] = useState(false);
   const [form, setForm] = useState({
     name: "",
     niche: "",
@@ -45,7 +46,6 @@ export default function NovoEscritorioPage() {
   async function handleSubmit() {
     setLoading(true);
     setError("");
-    setRetrying(false);
     const payload = {
       name: form.name,
       niche: form.custom_niche || form.niche,
@@ -58,24 +58,7 @@ export default function NovoEscritorioPage() {
       router.push(`/dashboard/canais?office_id=${data.id}`);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Erro desconhecido";
-      if (msg === "Failed to fetch" || msg.toLowerCase().includes("network")) {
-        // Render acordando — tentar novamente após 8s
-        setRetrying(true);
-        setError("");
-        await new Promise(r => setTimeout(r, 8000));
-        try {
-          const data = await offices.create(payload);
-          router.push(`/dashboard/canais?office_id=${data.id}`);
-          return;
-        } catch (e2: unknown) {
-          const msg2 = e2 instanceof Error ? e2.message : "Erro desconhecido";
-          setError(msg2 === "Failed to fetch" ? "Servidor demorou a responder. Aguarde 30s e tente novamente." : msg2);
-        } finally {
-          setRetrying(false);
-        }
-      } else {
-        setError(msg);
-      }
+      setError(msg);
     } finally {
       setLoading(false);
     }
@@ -131,13 +114,20 @@ export default function NovoEscritorioPage() {
                     </button>
                   ))}
                 </div>
-                <input
-                  type="text"
-                  value={form.custom_niche}
-                  onChange={e => setForm(f => ({ ...f, custom_niche: e.target.value, niche: "" }))}
-                  placeholder="Ou escreva um nicho personalizado..."
-                  className="w-full bg-white/[0.06] border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder-white/20 focus:outline-none focus:border-violet-500/60 transition-colors"
-                />
+                {/* Nicho customizado com contador */}
+                <div className="relative">
+                  <div className="absolute top-2 right-3 text-xs text-white/30 pointer-events-none select-none">
+                    {form.custom_niche.length}/{MAX_CHARS}
+                  </div>
+                  <input
+                    type="text"
+                    value={form.custom_niche}
+                    maxLength={MAX_CHARS}
+                    onChange={e => setForm(f => ({ ...f, custom_niche: e.target.value, niche: "" }))}
+                    placeholder="Ou escreva um nicho personalizado..."
+                    className="w-full bg-white/[0.06] border border-white/10 rounded-xl px-4 py-3 pr-20 text-sm text-white placeholder-white/20 focus:outline-none focus:border-violet-500/60 transition-colors"
+                  />
+                </div>
               </div>
             </div>
           </>
@@ -166,15 +156,22 @@ export default function NovoEscritorioPage() {
                 </button>
               ))}
             </div>
+            {/* Público-alvo com contador */}
             <div>
               <label className="block text-sm text-white/60 mb-1.5">Público-alvo</label>
-              <textarea
-                value={form.target_audience}
-                onChange={e => setForm(f => ({ ...f, target_audience: e.target.value }))}
-                placeholder="Descreva seu público-alvo. Ex: Jovens de 20-35 anos interessados em investimentos..."
-                rows={3}
-                className="w-full bg-white/[0.06] border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder-white/20 focus:outline-none focus:border-violet-500/60 transition-colors resize-none"
-              />
+              <div className="relative">
+                <div className="absolute top-2 right-3 text-xs text-white/30 pointer-events-none select-none">
+                  {form.target_audience.length}/{MAX_CHARS}
+                </div>
+                <textarea
+                  value={form.target_audience}
+                  maxLength={MAX_CHARS}
+                  onChange={e => setForm(f => ({ ...f, target_audience: e.target.value }))}
+                  placeholder="Descreva seu público-alvo. Ex: Jovens de 20-35 anos interessados em investimentos..."
+                  rows={3}
+                  className="w-full bg-white/[0.06] border border-white/10 rounded-xl px-4 py-3 pt-8 text-sm text-white placeholder-white/20 focus:outline-none focus:border-violet-500/60 transition-colors resize-none"
+                />
+              </div>
             </div>
           </>
         )}
@@ -243,7 +240,7 @@ export default function NovoEscritorioPage() {
               disabled={loading || form.platforms.length === 0}
               className="flex-1 py-3 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:bg-violet-900 disabled:cursor-not-allowed text-white text-sm font-semibold transition-colors"
             >
-              {retrying ? "Acordando servidor..." : loading ? "Criando..." : "Criar Escritório 🚀"}
+              {loading ? "Criando..." : "Criar Escritório 🚀"}
             </button>
           )}
         </div>

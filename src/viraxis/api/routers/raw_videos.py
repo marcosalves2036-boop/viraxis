@@ -60,19 +60,19 @@ async def _upload_to_supabase(path: str, data: bytes, mime_type: str) -> str:
     return path
 
 
-def _signed_url(path: str, expires_in: int = 3600) -> Optional[str]:
-    """Gera URL assinada para download (válida por 1h). Síncrono via requests."""
+async def _signed_url(path: str, expires_in: int = 86400) -> Optional[str]:
+    """Gera URL assinada para download (válida por 24h). Async via httpx."""
     if not _supabase_configured():
         return None
     try:
-        import requests
+        import httpx
         url = f"{_storage_base()}/object/sign/{SUPABASE_BUCKET}/{path}"
-        resp = requests.post(
-            url,
-            json={"expiresIn": expires_in},
-            headers=_storage_headers(),
-            timeout=10,
-        )
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                url,
+                json={"expiresIn": expires_in},
+                headers=_storage_headers(),
+            )
         if resp.status_code == 200:
             data = resp.json()
             signed = data.get("signedURL") or data.get("signedUrl") or ""
@@ -187,8 +187,8 @@ async def upload_video(
     # Upload para Supabase Storage
     await _upload_to_supabase(storage_path, data, mime_type)
 
-    # Gerar signed URL inicial (1h)
-    signed = _signed_url(storage_path)
+    # Gerar signed URL inicial (24h)
+    signed = await _signed_url(storage_path)
 
     # Registrar no banco
     repo = RawVideoRepository(session)
@@ -239,12 +239,14 @@ async def list_videos(
 
     videos = await repo.list_by_office(UUID(office_id), status=status_enum, limit=limit, offset=offset)
 
-    # Gerar signed URLs em lote (síncrono, mas rápido)
-    result_list = []
-    for v in videos:
-        signed = _signed_url(v.r2_key) if _supabase_configured() and v.r2_key else None
-        result_list.append(RawVideoResponse.from_model(v, signed_url=signed))
-    return result_list
+    # Gerar signed URLs em paralelo (async, 24h de validade)
+    import asyncio
+    async def _get_signed(v: RawVideo):
+        signed = await _signed_url(v.r2_key) if _supabase_configured() and v.r2_key else None
+        return RawVideoResponse.from_model(v, signed_url=signed)
+
+    result_list = await asyncio.gather(*[_get_signed(v) for v in videos])
+    return list(result_list)
 
 
 @router.get("/{video_id}", response_model=RawVideoResponse)
@@ -257,7 +259,7 @@ async def get_video(
     video = await repo.get(UUID(video_id))
     if not video or video.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Vídeo não encontrado.")
-    signed = _signed_url(video.r2_key) if _supabase_configured() and video.r2_key else None
+    signed = await _signed_url(video.r2_key) if _supabase_configured() and video.r2_key else None
     return RawVideoResponse.from_model(video, signed_url=signed)
 
 
@@ -289,7 +291,7 @@ async def update_video(
 
     await repo.save(video)
     await session.commit()
-    signed = _signed_url(video.r2_key) if _supabase_configured() and video.r2_key else None
+    signed = await _signed_url(video.r2_key) if _supabase_configured() and video.r2_key else None
     return RawVideoResponse.from_model(video, signed_url=signed)
 
 
@@ -307,9 +309,4 @@ async def delete_video(
     # Deletar do Supabase Storage também
     if video.r2_key and _supabase_configured():
         try:
-            await _delete_from_supabase(video.r2_key)
-        except Exception as e:
-            logger.warning("Erro ao deletar do Supabase Storage: %s", e)
-
-    await repo.delete(video)
-    await session.commit()
+            await _delete_from_supabase(v

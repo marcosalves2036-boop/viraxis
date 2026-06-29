@@ -165,3 +165,38 @@ export const content = {
   list: (officeId: string) =>
     req<ContentItemResponse[]>('GET', `/content-items?office_id=${officeId}`),
 }
+
+// ── Raw Videos ────────────────────────────────────────────────────────────────
+
+export interface RawVideoResponse {
+  id: string
+  office_id: string
+  original_filename: string
+  title?: string
+  description?: string
+  tags?: string[]
+  status: string
+  r2_url?: string
+  duration_seconds?: number
+  created_at: string
+}
+
+export const rawVideos = {
+  list:   (officeId: string) =>
+    req<RawVideoResponse[]>('GET', `/raw-videos?office_id=${officeId}`),
+  get:    (id: string) => req<RawVideoResponse>('GET', `/raw-videos/${id}`),
+  update: (id: string, body: Partial<Pick<RawVideoResponse,'title'|'description'|'tags'>>) =>
+    req<RawVideoResponse>('PATCH', `/raw-videos/${id}`, body),
+  delete: (id: string) => req<void>('DELETE', `/raw-videos/${id}`),
+}
+
+// ── Compat aliases (used by login/cadastro/verify-email pages) ────────────────
+
+// auth.save() — persiste o access_token retornado pelo login
+;(auth as typeof auth & { save: (t: TokenResponse) => void }).save =
+  (t: TokenResponse) => setToken(t.access_token)
+
+// api — alias de auth para compatibilidade com páginas legadas
+export const api = auth as typeof auth & {
+  save: (t: TokenResponse) => void
+}

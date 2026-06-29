@@ -53,6 +53,10 @@ export const auth = {
   resetPassword: (token: string, new_password: string) =>
     req<MessageResponse>('POST', '/auth/reset-password', { token, new_password }),
   me: () => req<UserResponse>('GET', '/users/me'),
+  // Compat helpers usados por layout/conteudo/login pages
+  getToken: () => getToken(),
+  clear: () => clearToken(),
+  save: (t: TokenResponse) => setToken(t.access_token),
 }
 
 // ── Offices ───────────────────────────────────────────────────────────────────
@@ -190,18 +194,5 @@ export const rawVideos = {
   delete: (id: string) => req<void>('DELETE', `/raw-videos/${id}`),
 }
 
-// ── Compat aliases (usados pelas páginas login/cadastro/verify-email/layout/conteudo) ─
-
-// Adiciona auth.getToken / auth.clear / auth.save para compatibilidade
-// com páginas que importam apenas { auth } de "@/lib/api"
-type AuthCompat = typeof auth & {
-  getToken: () => string | null
-  clear:    () => void
-  save:     (t: TokenResponse) => void
-}
-;(auth as AuthCompat).getToken = getToken
-;(auth as AuthCompat).clear    = clearToken
-;(auth as AuthCompat).save     = (t: TokenResponse) => setToken(t.access_token)
-
-// api = alias de auth (usado em cadastro/login/verify-email via `import { api }`)
-export const api = auth as AuthCompat
+// api = alias de auth (compatibilidade com login/cadastro/verify-email pages)
+export const api = auth

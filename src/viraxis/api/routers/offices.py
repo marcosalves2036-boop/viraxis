@@ -13,6 +13,7 @@ from sqlalchemy import delete as sa_delete, select
 
 from viraxis.api.deps import get_current_user, get_session
 from viraxis.domain.models.content_decision import ContentDecision, DecisionStatus
+from viraxis.domain.models.content_item import ContentItem, ContentStatus
 from viraxis.domain.models.niche_profile import NicheProfile
 from viraxis.domain.models.office import Office, OfficeStatus
 from viraxis.domain.models.user import User

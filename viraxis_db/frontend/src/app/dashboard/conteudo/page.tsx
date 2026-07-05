@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { auth } from "@/lib/api";
+import { auth, content as contentApi } from "@/lib/api";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -399,6 +399,7 @@ function ConteudoInner() {
   const [offices, setOffices] = useState<Office[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedItem, setSelectedItem] = useState<ContentItem | null>(null);
+  const [generatingItems, setGeneratingItems] = useState<Set<string>>(new Set());
   const [officeId, setOfficeId] = useState(officeFilter ?? "all");
 
   const token = typeof window !== "undefined" ? localStorage.getItem("viraxis_token") : null;
@@ -449,10 +450,32 @@ function ConteudoInner() {
 
   async function approveItem(itemId: string, officeId: string) {
     if (!officeId) return;
+
+    // 1. Aprovar roteiro (muda status no backend)
     const r = await fetch(`/api/offices/${officeId}/content/${itemId}/approve`, {
       method: "PATCH", headers,
     });
-    if (r.ok) setItems(prev => prev.map(i => i.id === itemId ? { ...i, status: "ready" } : i));
+    if (!r.ok) return;
+
+    // 2. Sinalizar geração no card
+    setItems(prev => prev.map(i => i.id === itemId ? { ...i, status: "rendering" } : i));
+    setGeneratingItems(prev => new Set(prev).add(itemId));
+
+    // 3. Disparar process-video direto no Render (evita timeout 10s do proxy Vercel)
+    try {
+      const result = await contentApi.processVideo(officeId, itemId);
+      setItems(prev => prev.map(i =>
+        i.id === itemId
+          ? { ...i, status: "ready", production_meta: { ...i.production_meta, video_url: result.video_url } }
+          : i
+      ));
+    } catch (err) {
+      console.error("Erro ao gerar vídeo:", err);
+      // Rollback visual: voltar para review para o usuário tentar de novo
+      setItems(prev => prev.map(i => i.id === itemId ? { ...i, status: "review" } : i));
+    } finally {
+      setGeneratingItems(prev => { const s = new Set(prev); s.delete(itemId); return s; });
+    }
   }
 
   async function rejectItem(itemId: string, officeId: string) {
@@ -585,8 +608,9 @@ function ConteudoInner() {
                       <div className="flex gap-2">
                         <button
                           onClick={e => { e.stopPropagation(); approveItem(item.id, item.office_id ?? ""); }}
-                          className="flex-1 py-1.5 bg-emerald-600/80 hover:bg-emerald-500 text-white text-xs font-bold rounded-lg transition-colors"
-                        >✅ Aprovar roteiro</button>
+                          disabled={generatingItems.has(item.id)}
+                          className="flex-1 py-1.5 bg-emerald-600/80 hover:bg-emerald-500 disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-bold rounded-lg transition-colors"
+                        >{generatingItems.has(item.id) ? "⚙️ Gerando vídeo…" : "✅ Aprovar roteiro"}</button>
                         <button
                           onClick={e => { e.stopPropagation(); rejectItem(item.id, item.office_id ?? ""); }}
                           className="flex-1 py-1.5 bg-red-900/60 hover:bg-red-800/60 text-white text-xs font-bold rounded-lg transition-colors"

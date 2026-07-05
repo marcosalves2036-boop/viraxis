@@ -5,11 +5,5 @@
   "installCommand": "npm install",
   "env": {
     "NEXT_PUBLIC_API_URL": "https://viraxis.onrender.com"
-  },
-  "crons": [
-    {
-      "path": "/api/ping",
-      "schedule": "*/14 * * * *"
-    }
-  ]
+  }
 }

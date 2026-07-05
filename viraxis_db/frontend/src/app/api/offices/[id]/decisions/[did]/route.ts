@@ -35,3 +35,20 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     return NextResponse.json({ detail: String(err) }, { status: 500 });
   }
 }
+
+export async function DELETE(req: NextRequest, { params }: Params) {
+  const { id, did } = await params;
+  const token = req.headers.get("authorization") ?? "";
+  try {
+    const res = await fetch(`${API}/offices/${id}/decisions/${did}`, {
+      method: "DELETE",
+      headers: { Authorization: token },
+    });
+    if (res.status === 204) return new NextResponse(null, { status: 204 });
+    const text = await res.text();
+    try { return NextResponse.json(JSON.parse(text), { status: res.status }); }
+    catch { return NextResponse.json({ detail: text }, { status: res.status }); }
+  } catch (err) {
+    return NextResponse.json({ detail: String(err) }, { status: 500 });
+  }
+}

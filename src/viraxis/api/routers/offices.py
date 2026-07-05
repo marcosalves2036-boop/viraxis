@@ -466,6 +466,43 @@ async def get_decision(
 
 
 
+@router.delete(
+    "/{office_id}/decisions/{decision_id}",
+    status_code=204,
+)
+async def delete_decision(
+    office_id: UUID,
+    decision_id: UUID,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Hard-delete de uma ContentDecision.
+
+    ContentItems vinculados têm decision_id zerado via SET NULL (FK).
+    Decisões em status 'executing' não podem ser removidas.
+    """
+    await _get_office_or_404(office_id, current_user.id, session)
+
+    result = await session.execute(
+        select(ContentDecision).where(
+            ContentDecision.id == decision_id,
+            ContentDecision.office_id == office_id,
+        )
+    )
+    decision = result.scalar_one_or_none()
+    if not decision:
+        raise HTTPException(status_code=404, detail="Decisão não encontrada.")
+    if decision.status == DecisionStatus.executing:
+        raise HTTPException(
+            status_code=422,
+            detail="Não é possível deletar uma decisão em execução.",
+        )
+
+    await session.delete(decision)
+    await session.commit()
+
+
+
 async def _run_renderer_safe(office_id, user_id, decision_id, extra_instructions=None) -> None:
     """Executa o RENDERER v2 em background sem propagar exceções."""
     try:

@@ -75,13 +75,14 @@ function RenderProgressBar({ progress, stage }: { progress: number; stage: strin
 // ── Decision Modal ────────────────────────────────────────────────────────────
 
 function DecisionModal({
-  decision, officeId, renderProgress, onClose, onStatusChange, onViewContent,
+  decision, officeId, renderProgress, onClose, onStatusChange, onViewContent, onDelete,
 }: {
   decision: Decision; officeId: string;
   renderProgress: RenderProgress | null;
   onClose: () => void;
   onStatusChange: (d: Decision) => void;
   onViewContent: (itemId: string) => void;
+  onDelete?: () => void;
 }) {
   const [loading, setLoading] = useState<string | null>(null);
   const [extraInstructions, setExtraInstructions] = useState("");
@@ -245,6 +246,12 @@ function DecisionModal({
             className="px-5 py-2.5 bg-white/[0.06] hover:bg-white/[0.10] text-white/60 text-sm rounded-xl transition-colors">
             Fechar
           </button>
+          {onDelete && decision.status !== "executing" && (
+            <button
+              onClick={() => { if (confirm("Deletar esta decisão?")) onDelete!(); }}
+              className="px-4 py-2.5 bg-red-900/40 hover:bg-red-800/60 text-red-400 hover:text-red-300 text-sm rounded-xl transition-colors ml-auto"
+            >🗑 Deletar</button>
+          )}
         </div>
       </div>
     </div>
@@ -390,6 +397,17 @@ export default function OfficeDetailPage() {
     router.push(`/dashboard/conteudo/${itemId}`);
   }
 
+  async function deleteDecision(decisionId: string) {
+    const r = await fetch(`/api/offices/${id}/decisions/${decisionId}`, {
+      method: "DELETE",
+      headers,
+    });
+    if (r.ok || r.status === 204) {
+      setDecisions(prev => prev.filter(d => d.id !== decisionId));
+      setSelectedDecision(null);
+    }
+  }
+
   const pendingCount = decisions.filter(d => d.status === "pending").length;
   const approvedCount = decisions.filter(d => d.status === "approved").length;
   const doneCount = decisions.filter(d => d.status === "done").length;
@@ -413,6 +431,7 @@ export default function OfficeDetailPage() {
           onClose={() => setSelectedDecision(null)}
           onStatusChange={d => { handleStatusChange(d); setSelectedDecision(null); }}
           onViewContent={handleViewContent}
+          onDelete={() => deleteDecision(selectedDecision.id)}
         />
       )}
 

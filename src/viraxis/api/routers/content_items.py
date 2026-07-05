@@ -249,6 +249,136 @@ async def soft_delete_content_item(
     await session.commit()
 
 
+# ── Producao de video (.mp4) ───────────────────────────────────────────────────
+
+class ProcessVideoResponse(BaseModel):
+    video_url: str
+    storage_path: str
+    status: str
+    mode: str
+
+
+def _extract_script_for_tts(item: ContentItem) -> str:
+    """Extrai texto corrido do script para narração TTS (modo 100% IA)."""
+    meta = item.production_meta or {}
+    # v2_direct: roteiro estruturado
+    rot = meta.get("roteiro") or {}
+    if rot:
+        parts = [rot.get("hook", "")]
+        dev = rot.get("desenvolvimento") or []
+        if isinstance(dev, list):
+            parts.extend(str(c) for c in dev)
+        else:
+            parts.append(str(dev))
+        parts.extend([rot.get("climax", ""), rot.get("cta", "")])
+        text = " ".join(x for x in parts if x)
+        if text.strip():
+            return text
+    # runner CrewAI: full_script
+    ro = meta.get("renderer_output") or {}
+    if ro.get("full_script"):
+        return str(ro["full_script"])
+    # fallback: script salvo (strip de markdown simples)
+    import re
+    text = re.sub(r"[#*_`>]|\n+", " ", item.script or "")
+    return text.strip()
+
+
+@router.post(
+    "/{office_id}/content-items/{item_id}/process-video",
+    response_model=ProcessVideoResponse,
+)
+async def process_video(
+    office_id: UUID,
+    item_id: UUID,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Produz o arquivo .mp4 real do ContentItem.
+
+    - mode=editing_plan (com referência): baixa o vídeo bruto, aplica os cortes
+      do plano de edição via FFmpeg e sobe para edited/{item_id}.mp4.
+    - mode=new_script (100% IA): narração TTS PT-BR + fundo preto 9:16,
+      sobe para ai_generated/{item_id}.mp4.
+
+    Atualiza storage_path (caminho estável no bucket) e status=ready.
+    Retorna signed URL (7 dias) para reprodução imediata.
+    """
+    await _get_office_or_404(office_id, current_user.id, session)
+    repo = ContentItemRepository(session)
+    item = await _get_item_or_404(repo, item_id, office_id)
+
+    meta = item.production_meta or {}
+    if not meta:
+        raise HTTPException(status_code=422, detail="ContentItem sem production_meta.")
+    if item.status == ContentStatus.rendering:
+        raise HTTPException(status_code=422, detail="Item ainda está sendo gerado pelo RENDERER.")
+
+    mode = meta.get("mode") or ("editing_plan" if meta.get("plano_edicao") else "new_script")
+
+    try:
+        if mode == "editing_plan":
+            from viraxis.domain.models.raw_video import RawVideo
+            from viraxis.infrastructure.video_processor import (
+                apply_editing_plan,
+                extract_keep_segments,
+                sign_storage_path,
+            )
+
+            # raw_video_id: v2_direct → meta.raw_video.id | runner → meta.raw_video_id
+            rv_id = meta.get("raw_video_id") or (meta.get("raw_video") or {}).get("id")
+            if not rv_id and item.decision_id:
+                from viraxis.domain.models.content_decision import ContentDecision
+                dec = await session.get(ContentDecision, item.decision_id)
+                if dec and dec.raw_video_id:
+                    rv_id = str(dec.raw_video_id)
+            if not rv_id:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Item em modo editing_plan sem raw_video_id no production_meta.",
+                )
+
+            raw_video = await session.get(RawVideo, UUID(str(rv_id)))
+            if not raw_video or raw_video.office_id != office_id:
+                raise HTTPException(status_code=404, detail="Vídeo bruto não encontrado.")
+
+            raw_url = await sign_storage_path(raw_video.r2_key, expires_in=86400)
+            keep_segments = extract_keep_segments(meta)
+            dest_path, video_url = await apply_editing_plan(
+                raw_url, keep_segments, str(item_id)
+            )
+
+        elif mode == "new_script":
+            from viraxis.infrastructure.video_composer import compose_ai_video
+
+            script_text = _extract_script_for_tts(item)
+            if not script_text:
+                raise HTTPException(status_code=422, detail="Item sem script para narração.")
+            dest_path, video_url = await compose_ai_video(script_text, str(item_id))
+
+        else:
+            raise HTTPException(status_code=422, detail=f"mode desconhecido: {mode}")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao produzir vídeo: {e}")
+
+    # Atualizar ContentItem
+    item.storage_path = dest_path
+    item.status = ContentStatus.ready
+    item.production_meta = {**meta, "video_url": video_url, "video_storage_path": dest_path}
+    session.add(item)
+    await session.commit()
+
+    return ProcessVideoResponse(
+        video_url=video_url,
+        storage_path=dest_path,
+        status=ContentStatus.ready.value,
+        mode=mode,
+    )
+
+
 # ── Publicacao ─────────────────────────────────────────────────────────────────
 
 class PublishTargetRequest(BaseModel):

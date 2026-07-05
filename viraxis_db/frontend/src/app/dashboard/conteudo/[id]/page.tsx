@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { auth } from "@/lib/api";
+import { auth, content } from "@/lib/api";
 
 
 interface CorteEdicao { inicio?: number; fim?: number; tipo: string; descricao: string; prioridade?: string }
@@ -20,6 +20,8 @@ interface ProductionMeta {
   mode?: "editing_plan" | "new_script";
   plano_edicao?: PlanoEdicao;
   raw_video?: { id: string; title: string; duration_seconds?: number };
+  video_url?: string;
+  video_storage_path?: string;
 
   render_progress?: number;
   render_stage?: string;
@@ -45,6 +47,10 @@ export default function ContentDetailPage() {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<"roteiro" | "thumbnails" | "seo" | "plano" | "checklist">("roteiro");
   const [selectedThumb, setSelectedThumb] = useState(0);
+  const [officeId, setOfficeId] = useState<string | null>(null);
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [generating, setGenerating] = useState(false);
+  const [genError, setGenError] = useState<string | null>(null);
 
   const token = typeof window !== "undefined" ? localStorage.getItem("viraxis_token") : null;
 
@@ -62,7 +68,12 @@ export default function ContentDetailPage() {
           if (cr.ok) {
             const items: ContentItem[] = await cr.json();
             const found = items.find(i => i.id === id);
-            if (found) { setItem(found); break; }
+            if (found) {
+              setItem(found);
+              setOfficeId(o.id);
+              if (found.production_meta?.video_url) setVideoUrl(found.production_meta.video_url);
+              break;
+            }
           }
         }
       } finally { setLoading(false); }
@@ -82,6 +93,24 @@ export default function ContentDetailPage() {
   );
 
   const meta = item.production_meta;
+
+  async function handleGenerateVideo() {
+    if (!officeId || generating) return;
+    setGenerating(true);
+    setGenError(null);
+    try {
+      const r = await content.processVideo(officeId, item!.id);
+      setVideoUrl(r.video_url);
+      setItem(prev => prev ? { ...prev, status: "ready" } : prev);
+    } catch (e) {
+      setGenError(e instanceof Error ? e.message : "Erro ao gerar vídeo");
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  const canGenerate = officeId && item.status !== "rendering";
+
   const tabs = [
     { id: "roteiro" as const, label: meta.plano_edicao ? "✂️ Edição" : "📝 Roteiro" },
     { id: "thumbnails" as const, label: "🖼 Thumbnails" },
@@ -97,6 +126,52 @@ export default function ContentDetailPage() {
         <h1 className="text-xl font-black text-white leading-snug">{item.title}</h1>
         {item.duration_seconds && (
           <p className="text-white/40 text-sm mt-1">⏱ {Math.round(item.duration_seconds)}s</p>
+        )}
+      </div>
+
+      {/* Video generation */}
+      <div className="card-glass rounded-2xl p-5">
+        <div className="flex items-center justify-between gap-4 flex-wrap">
+          <div>
+            <p className="text-xs font-semibold text-white/40 uppercase tracking-wider">🎬 Vídeo</p>
+            <p className="text-white/30 text-xs mt-1">
+              {meta.plano_edicao
+                ? "Aplica os cortes do plano de edição no vídeo bruto e gera o .mp4 final."
+                : "Gera narração em PT-BR do roteiro e compõe o .mp4 vertical (9:16)."}
+            </p>
+          </div>
+          {canGenerate && (
+            <button
+              onClick={handleGenerateVideo}
+              disabled={generating}
+              className="bg-violet-600 hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl text-sm font-semibold px-4 py-2 transition-colors shrink-0"
+            >
+              {generating ? "⚙️ Gerando vídeo…" : videoUrl ? "🔄 Gerar novamente" : "🎬 Gerar Vídeo"}
+            </button>
+          )}
+        </div>
+        {generating && (
+          <p className="text-violet-300/60 text-xs mt-3 animate-pulse">
+            Processando com FFmpeg — pode levar 1-2 minutos…
+          </p>
+        )}
+        {genError && (
+          <p className="text-red-400 text-xs mt-3">❌ {genError}</p>
+        )}
+        {videoUrl && !generating && (
+          <div className="mt-4">
+            <video
+              src={videoUrl}
+              controls
+              className="w-full max-w-xs mx-auto rounded-xl border border-white/10 bg-black"
+              style={{ aspectRatio: "9/16" }}
+            />
+            <p className="text-center mt-2">
+              <a href={videoUrl} target="_blank" rel="noopener noreferrer" className="text-violet-400 text-xs hover:underline">
+                ⬇ Abrir/baixar .mp4
+              </a>
+            </p>
+          </div>
         )}
       </div>
 

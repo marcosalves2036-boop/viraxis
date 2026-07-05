@@ -32,6 +32,7 @@ dependencies = [
     # Media
     "faster-whisper>=1.0.0",
     "yt-dlp>=2024.5.1",
+    "edge-tts>=6.1.0",         # TTS PT-BR (vozes neurais) para modo 100% IA
 
     # Storage
     "boto3>=1.34.0",           # Cloudflare R2 (S3-compatible) — legado

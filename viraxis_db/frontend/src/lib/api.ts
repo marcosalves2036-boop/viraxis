@@ -165,10 +165,19 @@ export interface RenderResponse {
   duration_seconds?: number
 }
 
+export interface ProcessVideoResponse {
+  video_url: string
+  storage_path: string
+  status: string
+  mode: string
+}
+
 export const content = {
   get: (id: string) => req<ContentItemResponse>('GET', `/content-items/${id}`),
   list: (officeId: string) =>
     req<ContentItemResponse[]>('GET', `/content-items?office_id=${officeId}`),
+  processVideo: (officeId: string, itemId: string) =>
+    req<ProcessVideoResponse>('POST', `/offices/${officeId}/content-items/${itemId}/process-video`),
 }
 
 // ── Raw Videos ────────────────────────────────────────────────────────────────

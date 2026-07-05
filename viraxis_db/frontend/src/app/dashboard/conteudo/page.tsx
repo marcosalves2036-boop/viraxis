@@ -35,6 +35,8 @@ interface ProductionMeta {
   mode?: "editing_plan" | "new_script";
   plano_edicao?: PlanoEdicao;
   raw_video?: { id: string; title: string; duration_seconds?: number };
+  video_url?: string;
+  video_storage_path?: string;
 
   render_progress?: number;
   render_stage?: string;
@@ -73,7 +75,15 @@ const STATUS_LABELS: Record<string, string> = {
 
 // ── Content Detail Modal ──────────────────────────────────────────────────────
 
-function ContentModal({ item, onClose, onDelete }: { item: ContentItem; onClose: () => void; onDelete: (id: string, officeId: string) => Promise<void> }) {
+function ContentModal({
+  item, onClose, onDelete, onApprove, isGenerating,
+}: {
+  item: ContentItem;
+  onClose: () => void;
+  onDelete: (id: string, officeId: string) => Promise<void>;
+  onApprove?: (itemId: string, officeId: string) => Promise<void>;
+  isGenerating?: boolean;
+}) {
   const [activeTab, setActiveTab] = useState<"roteiro" | "thumbnails" | "seo" | "plano" | "checklist">("roteiro");
   const [selectedThumb, setSelectedThumb] = useState(0);
   const [deleting, setDeleting] = useState(false);
@@ -131,6 +141,45 @@ function ContentModal({ item, onClose, onDelete }: { item: ContentItem; onClose:
             </div>
           )}
         </div>
+
+        {/* Ação: aprovar / progresso / player */}
+        {item.status === "review" && onApprove && (
+          <div className="mx-6 mt-4 mb-1 p-3 rounded-xl border border-amber-500/20 bg-amber-500/5 shrink-0">
+            <p className="text-amber-400 text-xs font-semibold mb-2">👁 Roteiro aguardando aprovação</p>
+            <button
+              onClick={() => onApprove(item.id, item.office_id ?? "")}
+              disabled={isGenerating}
+              className="w-full py-2 bg-emerald-600/80 hover:bg-emerald-500 disabled:opacity-60 disabled:cursor-not-allowed text-white text-sm font-bold rounded-lg transition-colors"
+            >
+              {isGenerating ? "⚙️ Aprovando e gerando vídeo…" : "✅ Aprovar roteiro e gerar vídeo"}
+            </button>
+          </div>
+        )}
+        {item.status === "rendering" && (
+          <div className="mx-6 mt-4 mb-1 p-3 rounded-xl border border-blue-500/20 bg-blue-500/5 shrink-0">
+            <p className="text-blue-400 text-xs font-semibold">⚙️ Gerando vídeo… aguarde ~60s</p>
+            <div className="mt-2 h-1.5 rounded-full bg-white/10 overflow-hidden">
+              <div className="h-full rounded-full bg-gradient-to-r from-violet-500 to-cyan-400 animate-pulse w-1/2" />
+            </div>
+          </div>
+        )}
+        {(item.status === "ready" || item.status === "published") && item.production_meta?.video_url && (
+          <div className="mx-6 mt-4 mb-1 shrink-0">
+            <video
+              src={item.production_meta.video_url}
+              controls
+              className="w-full rounded-xl aspect-[9/16] max-h-64 bg-black object-contain"
+            />
+            <a
+              href={item.production_meta.video_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-2 block text-center text-xs text-violet-400 hover:text-violet-300"
+            >
+              ⬇️ Baixar vídeo
+            </a>
+          </div>
+        )}
 
         {/* Tabs */}
         <div className="flex gap-0 border-b border-white/[0.06] shrink-0 overflow-x-auto">
@@ -448,6 +497,11 @@ function ConteudoInner() {
     setItems(prev => prev.filter(i => i.id !== itemId));
   }
 
+  function updateItem(id: string, patch: Partial<ContentItem>) {
+    setItems(prev => prev.map(i => i.id === id ? { ...i, ...patch } : i));
+    setSelectedItem(prev => prev?.id === id ? { ...prev, ...patch } : prev);
+  }
+
   async function approveItem(itemId: string, officeId: string) {
     if (!officeId) return;
 
@@ -457,22 +511,22 @@ function ConteudoInner() {
     });
     if (!r.ok) return;
 
-    // 2. Sinalizar geração no card
-    setItems(prev => prev.map(i => i.id === itemId ? { ...i, status: "rendering" } : i));
+    // 2. Sinalizar geração (card + modal em sincronia)
+    updateItem(itemId, { status: "rendering" });
     setGeneratingItems(prev => new Set(prev).add(itemId));
 
     // 3. Disparar process-video direto no Render (evita timeout 10s do proxy Vercel)
     try {
       const result = await contentApi.processVideo(officeId, itemId);
-      setItems(prev => prev.map(i =>
-        i.id === itemId
-          ? { ...i, status: "ready", production_meta: { ...i.production_meta, video_url: result.video_url } }
-          : i
-      ));
+      const currentMeta = items.find(i => i.id === itemId)?.production_meta ?? ({} as ProductionMeta);
+      updateItem(itemId, {
+        status: "ready",
+        production_meta: { ...currentMeta, video_url: result.video_url },
+      });
     } catch (err) {
       console.error("Erro ao gerar vídeo:", err);
       // Rollback visual: voltar para review para o usuário tentar de novo
-      setItems(prev => prev.map(i => i.id === itemId ? { ...i, status: "review" } : i));
+      updateItem(itemId, { status: "review" });
     } finally {
       setGeneratingItems(prev => { const s = new Set(prev); s.delete(itemId); return s; });
     }
@@ -493,7 +547,15 @@ function ConteudoInner() {
 
   return (
     <>
-      {selectedItem && <ContentModal item={selectedItem} onClose={() => setSelectedItem(null)} onDelete={deleteItem} />}
+      {selectedItem && (
+        <ContentModal
+          item={selectedItem}
+          onClose={() => setSelectedItem(null)}
+          onDelete={deleteItem}
+          onApprove={approveItem}
+          isGenerating={generatingItems.has(selectedItem.id)}
+        />
+      )}
 
       <div className="max-w-5xl mx-auto space-y-6">
         <div className="flex items-start justify-between gap-4 flex-wrap">

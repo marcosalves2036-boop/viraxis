@@ -55,9 +55,10 @@ class ScriptSection(BaseModel):
 
 
 class RendererOutput(BaseModel):
-    """Roteiro estruturado gerado pelo RENDERER."""
+    """Roteiro estruturado gerado pelo RENDERER (modo '100% IA')."""
 
     schema_version: str = "1.0"
+    mode: Literal["new_script"] = "new_script"
 
     title: str = Field(
         description="Título do vídeo — otimizado para SEO e retenção.",
@@ -98,4 +99,69 @@ class RendererOutput(BaseModel):
         description="Confiança do RENDERER na qualidade do roteiro, de 0.0 a 1.0.",
         ge=0.0,
         le=1.0,
+    )
+
+
+# ------------------------------------------------------------------ #
+# Modo "com referência" — plano de edição de vídeo bruto existente    #
+# ------------------------------------------------------------------ #
+
+class EditingInstruction(BaseModel):
+    """Uma instrução de edição para um trecho do vídeo."""
+
+    timestamp_start: float | None = Field(
+        default=None, description="Início do trecho, em segundos do vídeo bruto."
+    )
+    timestamp_end: float | None = Field(
+        default=None, description="Fim do trecho, em segundos do vídeo bruto."
+    )
+    instruction_type: Literal[
+        "cut", "keep", "overlay_text", "music", "speed", "transition"
+    ] = Field(description="Tipo da instrução de edição.")
+    description: str = Field(
+        description="Instrução concreta e executável para o editor.",
+        min_length=5,
+    )
+    priority: Literal["essential", "recommended", "optional"] = "recommended"
+
+
+class EditingPlanOutput(BaseModel):
+    """Plano de edição gerado pelo RENDERER para vídeo 'com referência'."""
+
+    schema_version: str = "1.0"
+    mode: Literal["editing_plan"] = "editing_plan"
+
+    title: str = Field(
+        description="Título do vídeo FINAL editado — otimizado para retenção.",
+        max_length=512,
+    )
+    hook_timestamp: float = Field(
+        description="Segundo exato do vídeo bruto onde começa o hook.",
+        ge=0.0,
+    )
+    suggested_cuts: list[EditingInstruction] = Field(
+        description="Instruções de corte/manutenção de trechos do vídeo bruto.",
+        min_length=1,
+    )
+    overlay_texts: list[EditingInstruction] = Field(
+        default_factory=list,
+        description="Textos na tela com timestamps.",
+    )
+    music_suggestion: str | None = Field(
+        default=None,
+        description="Estilo/vibe de trilha sonora. None se o áudio original for o forte.",
+    )
+    estimated_final_duration: float = Field(
+        description="Duração final estimada em segundos após a edição.",
+        gt=0.0,
+    )
+    platform_adaptations: dict = Field(
+        default_factory=dict,
+        description='Ajustes por plataforma, ex: {"tiktok": "...", "instagram": "..."}.',
+    )
+    archetype_used: str = Field(
+        description="Archetype viral aplicado (deve coincidir com o da decisão)."
+    )
+    production_notes: str = Field(
+        description="Instruções gerais para o editor: ritmo, transições, tom."
     )

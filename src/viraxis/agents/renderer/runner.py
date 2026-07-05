@@ -19,8 +19,12 @@ from crewai import Crew, Process
 from sqlalchemy import desc, select
 
 from viraxis.agents.renderer.agent import create_renderer_agent
-from viraxis.agents.renderer.schemas import RendererInput, RendererOutput
-from viraxis.agents.renderer.tasks import create_render_task
+from viraxis.agents.renderer.schemas import (
+    EditingPlanOutput,
+    RendererInput,
+    RendererOutput,
+)
+from viraxis.agents.renderer.tasks import create_editing_plan_task, create_render_task
 from viraxis.domain.models.content_decision import ContentDecision, DecisionStatus
 from viraxis.domain.models.content_item import ContentItem, ContentStatus
 from viraxis.domain.models.trend_snapshot import TrendSnapshot
@@ -32,7 +36,44 @@ from viraxis.infrastructure.repositories.niche_profile import NicheProfileReposi
 logger = logging.getLogger(__name__)
 
 
-def _run_renderer_crew_sync(agent, task) -> RendererOutput:
+
+
+def _format_editing_plan(plan: "EditingPlanOutput") -> str:
+    """Formata o plano de edição como texto legível para ContentItem.script."""
+    lines = [
+        f"PLANO DE EDIÇÃO — {plan.title}",
+        f"Hook: {plan.hook_timestamp:.0f}s do vídeo bruto",
+        f"Duração final estimada: {plan.estimated_final_duration:.0f}s",
+        "",
+        "CORTES:",
+    ]
+    for c in plan.suggested_cuts:
+        ts = (
+            f"[{c.timestamp_start:.0f}s–{c.timestamp_end:.0f}s] "
+            if c.timestamp_start is not None and c.timestamp_end is not None
+            else ""
+        )
+        lines.append(f"  • ({c.priority}) {ts}{c.instruction_type}: {c.description}")
+    if plan.overlay_texts:
+        lines.append("")
+        lines.append("TEXTOS NA TELA:")
+        for t in plan.overlay_texts:
+            ts = (
+                f"[{t.timestamp_start:.0f}s–{t.timestamp_end:.0f}s] "
+                if t.timestamp_start is not None and t.timestamp_end is not None
+                else ""
+            )
+            lines.append(f"  • {ts}{t.description}")
+    if plan.music_suggestion:
+        lines.append("")
+        lines.append(f"TRILHA: {plan.music_suggestion}")
+    lines.append("")
+    lines.append(f"NOTAS DE PRODUÇÃO: {plan.production_notes}")
+    return "\n".join(lines)
+
+
+
+def _run_renderer_crew_sync(agent, task) -> RendererOutput | EditingPlanOutput:
     """Executa o Crew RENDERER de forma síncrona — via asyncio.to_thread."""
     crew = Crew(
         agents=[agent],
@@ -161,37 +202,66 @@ async def run_renderer(
             office_id, decision_id, renderer_input.selected_topic,
         )
 
+        # Modo "com referência": decisão vinculada a vídeo bruto existente
+        is_com_referencia = decision.raw_video_id is not None and reference_video_ctx is not None
+
         try:
-            # ---- 6. Executar CrewAI ----
+            # ---- 6. Executar CrewAI (task conforme o modo) ----
             agent = create_renderer_agent(temperature=resolved_temperature)
-            task = create_render_task(agent, renderer_input)
-            renderer_output: RendererOutput = await asyncio.to_thread(
+            if is_com_referencia:
+                task = create_editing_plan_task(agent, renderer_input)
+            else:
+                task = create_render_task(agent, renderer_input)
+
+            renderer_output = await asyncio.to_thread(
                 _run_renderer_crew_sync, agent, task
             )
 
-            logger.info(
-                "RENDERER concluiu | title=%.60s | duration=%ds | confidence=%.2f",
-                renderer_output.title,
-                renderer_output.total_duration_estimate_seconds,
-                renderer_output.confidence_score,
-            )
-
-            # ---- 7. Persistir ContentItem ----
-            content_item = ContentItem(
-                office_id=office_id,
-                user_id=user_id,
-                decision_id=decision_id,
-                title=renderer_output.title,
-                script=renderer_output.full_script,
-                status=ContentStatus.draft,
-                duration_seconds=float(renderer_output.total_duration_estimate_seconds),
-                production_meta={
+            # ---- 7. Persistir ContentItem (campos conforme o modo) ----
+            if isinstance(renderer_output, EditingPlanOutput):
+                logger.info(
+                    "RENDERER concluiu (editing_plan) | title=%.60s | final=%.0fs | cortes=%d",
+                    renderer_output.title,
+                    renderer_output.estimated_final_duration,
+                    len(renderer_output.suggested_cuts),
+                )
+                script_text = _format_editing_plan(renderer_output)
+                duration = float(renderer_output.estimated_final_duration)
+                production_meta = {
+                    "mode": "editing_plan",
+                    "renderer_output": renderer_output.model_dump(),
+                    "archetype_applied": renderer_output.archetype_used,
+                    "platform_adaptations": renderer_output.platform_adaptations,
+                    "raw_video_id": str(decision.raw_video_id),
+                    "trend_snapshot_id": str(latest_trend.id) if latest_trend else None,
+                }
+            else:
+                logger.info(
+                    "RENDERER concluiu | title=%.60s | duration=%ds | confidence=%.2f",
+                    renderer_output.title,
+                    renderer_output.total_duration_estimate_seconds,
+                    renderer_output.confidence_score,
+                )
+                script_text = renderer_output.full_script
+                duration = float(renderer_output.total_duration_estimate_seconds)
+                production_meta = {
+                    "mode": "new_script",
                     "renderer_output": renderer_output.model_dump(),
                     "archetype_applied": renderer_output.archetype_applied,
                     "platform_adaptations": renderer_output.platform_adaptations,
                     "confidence_score": renderer_output.confidence_score,
                     "trend_snapshot_id": str(latest_trend.id) if latest_trend else None,
-                },
+                }
+
+            content_item = ContentItem(
+                office_id=office_id,
+                user_id=user_id,
+                decision_id=decision_id,
+                title=renderer_output.title,
+                script=script_text,
+                status=ContentStatus.draft,
+                duration_seconds=duration,
+                production_meta=production_meta,
             )
             session.add(content_item)
 
@@ -204,8 +274,8 @@ async def run_renderer(
                 run_log,
                 output_data={
                     "title": renderer_output.title,
-                    "duration_seconds": renderer_output.total_duration_estimate_seconds,
-                    "confidence_score": renderer_output.confidence_score,
+                    "mode": production_meta["mode"],
+                    "duration_seconds": duration,
                 },
             )
 

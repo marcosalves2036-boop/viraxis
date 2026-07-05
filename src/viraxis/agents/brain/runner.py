@@ -27,6 +27,7 @@ from viraxis.infrastructure.repositories.content_decision import ContentDecision
 from viraxis.infrastructure.repositories.niche_profile import NicheProfileRepository
 from viraxis.infrastructure.repositories.raw_video import RawVideoRepository
 from viraxis.agents.brain.schemas import RawVideoContext
+from viraxis.domain.models.raw_video import RawVideo
 from viraxis.domain.models.trend_snapshot import TrendSnapshot
 
 logger = logging.getLogger(__name__)
@@ -136,13 +137,40 @@ async def run_brain(
                 sum(seasonal_multipliers) / len(seasonal_multipliers),
             )
 
-        niche_input = BrainDecisionInput.from_niche_profile(niche, raw_videos=raw_video_contexts)
+        # ---- Modo "com referência": carregar o vídeo bruto selecionado ----
+        reference_video_ctx: RawVideoContext | None = None
+        if raw_video_id is not None:
+            ref_video = await session.get(RawVideo, raw_video_id)
+            if ref_video is None or ref_video.office_id != office_id:
+                raise ValueError(
+                    f"Vídeo bruto {raw_video_id} não encontrado neste escritório."
+                )
+            reference_video_ctx = RawVideoContext(
+                id=str(ref_video.id),
+                title=ref_video.title or ref_video.original_filename,
+                duration_seconds=ref_video.duration_seconds,
+                tags=ref_video.tags or [],
+                description=ref_video.description,
+            )
+            logger.info(
+                "BRAIN modo 'com referência' | office=%s | video=%s (%s)",
+                office_id,
+                raw_video_id,
+                reference_video_ctx.title,
+            )
+
+        niche_input = BrainDecisionInput.from_niche_profile(
+            niche,
+            raw_videos=raw_video_contexts,
+            reference_video=reference_video_ctx,
+        )
         niche_input.seasonal_multipliers = seasonal_multipliers
         logger.info(
-            "BRAIN iniciando análise | office=%s | nicho=%s | temp=%.2f",
+            "BRAIN iniciando análise | office=%s | nicho=%s | temp=%.2f | modo=%s",
             office_id,
             niche.niche_name,
             resolved_temperature,
+            "com_referencia" if reference_video_ctx else "100_ia",
         )
 
         # ---- 2. Criar AgentRunLog com status=running ----

@@ -36,6 +36,16 @@ class BrainDecisionInput(BaseModel):
         description="Vídeos brutos disponíveis que o BRAIN pode referenciar na decisão.",
     )
 
+    # Modo "com referência": vídeo bruto específico escolhido pelo operador.
+    # Quando presente, o BRAIN decide COMO editar este vídeo (não cria tema novo).
+    reference_video: RawVideoContext | None = Field(
+        default=None,
+        description=(
+            "Vídeo bruto de referência selecionado pelo usuário. Quando presente, "
+            "a decisão do BRAIN é uma estratégia de edição deste vídeo."
+        ),
+    )
+
     # v2: multiplicadores sazonais das tendências recentes
     seasonal_multipliers: list[float] = Field(
         default_factory=list,
@@ -50,6 +60,7 @@ class BrainDecisionInput(BaseModel):
         cls,
         profile: NicheProfile,
         raw_videos: list[RawVideoContext] | None = None,
+        reference_video: RawVideoContext | None = None,
     ) -> "BrainDecisionInput":
         """Constrói o input a partir de um NicheProfile ORM."""
         return cls(
@@ -61,6 +72,7 @@ class BrainDecisionInput(BaseModel):
             brain_params=profile.brain_params or {},
             raw_notes=profile.raw_notes,
             available_raw_videos=raw_videos or [],
+            reference_video=reference_video,
         )
 
     def to_context_string(self) -> str:

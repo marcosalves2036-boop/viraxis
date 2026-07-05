@@ -18,6 +18,7 @@ from sqlalchemy import desc, select
 from viraxis.config import get_settings
 from viraxis.domain.models.content_decision import ContentDecision, DecisionStatus
 from viraxis.domain.models.content_item import ContentItem, ContentStatus
+from viraxis.domain.models.raw_video import RawVideo
 from viraxis.domain.models.trend_snapshot import TrendSnapshot
 from viraxis.infrastructure.database.session import AsyncSessionLocal
 from viraxis.infrastructure.repositories.niche_profile import NicheProfileRepository
@@ -108,6 +109,99 @@ Retorne APENAS este JSON (todos os campos obrigatórios, sem texto antes ou depo
 }}"""
 
 
+USER_PROMPT_EDITING = """Um vídeo bruto REAL será editado e publicado. NÃO crie um roteiro novo —
+gere um PLANO DE EDIÇÃO concreto deste vídeo específico, mais o pacote de publicação.
+
+ESCRITÓRIO
+- Nicho: {niche_name}
+- Plataforma: {platform}
+- Público-alvo: {target_audience}
+- Voz do canal: {voice_style}
+- Estilo: {content_style}
+
+VÍDEO A EDITAR (já existe — todos os timestamps devem estar dentro da duração bruta)
+- Título: {video_title}
+- Duração bruta: {video_duration}
+- Tags: {video_tags}
+- Descrição: {video_description}
+
+DECISÃO DO BRAIN (estratégia de edição aprovada)
+- Direção: {selected_topic}
+- Archetype alvo: {selected_archetype}
+- Hipótese: {hypothesis}
+- Confiança: {confidence_score}%
+
+TENDÊNCIAS RECENTES
+{trend_context}
+
+Retorne APENAS este JSON (todos os campos obrigatórios, sem texto antes ou depois):
+{{
+  "plano_edicao": {{
+    "hook_timestamp": 12,
+    "cortes": [
+      {{"inicio": 0, "fim": 10, "tipo": "cut", "descricao": "o que cortar/manter e por quê", "prioridade": "essencial"}},
+      {{"inicio": 10, "fim": 25, "tipo": "keep", "descricao": "trecho a manter", "prioridade": "essencial"}}
+    ],
+    "textos_tela": [
+      {{"inicio": 0, "fim": 3, "texto": "TEXTO EXATO NA TELA"}}
+    ],
+    "trilha_sonora": "estilo/vibe da trilha, ou null se o áudio original for o forte",
+    "duracao_final_segundos": 45,
+    "notas_producao": "ritmo, transições, tom, o que NÃO fazer"
+  }},
+  "titulos": [
+    "Título 1 — mais viral com emoji",
+    "Título 2 — otimizado para busca",
+    "Título 3 — criativo/alternativo"
+  ],
+  "thumbnails": [
+    {{
+      "descricao": "conceito visual usando frames do próprio vídeo",
+      "cores_principais": ["#FF0000", "#FFFFFF"],
+      "elementos": ["elemento 1", "elemento 2"],
+      "texto_overlay": "texto em destaque curto",
+      "composicao": "descrição do layout"
+    }},
+    {{
+      "descricao": "variação 2",
+      "cores_principais": ["#0000FF", "#FFFF00"],
+      "elementos": ["elem1", "elem2"],
+      "texto_overlay": "texto alternativo",
+      "composicao": "layout alternativo"
+    }},
+    {{
+      "descricao": "variação 3 minimalista",
+      "cores_principais": ["#000000"],
+      "elementos": ["elem principal"],
+      "texto_overlay": "texto mínimo",
+      "composicao": "composição simples"
+    }}
+  ],
+  "seo": {{
+    "titulo_otimizado": "título com keyword no início max 60 chars",
+    "descricao": "2 parágrafos com keywords naturais",
+    "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"],
+    "hashtags": ["#hashtag1", "#hashtag2", "#hashtag3"],
+    "categoria": "categoria da plataforma"
+  }},
+  "plano_postagem": {{
+    "melhor_dia": "Sábado",
+    "melhor_horario": "19h-21h",
+    "frequencia_ideal": "3x por semana",
+    "estrategia_reposts": "como adaptar para outras plataformas",
+    "notas": "dica para maximizar alcance"
+  }},
+  "checklist_producao": [
+    "Item acionável de edição 1",
+    "Item 2",
+    "Item 3",
+    "Item 4",
+    "Item 5"
+  ],
+  "duracao_estimada_segundos": 45
+}}"""
+
+
 async def _update_progress(item_id: UUID, progress: int, stage: str) -> None:
     import json as _json
     from sqlalchemy import text
@@ -189,6 +283,24 @@ async def run_renderer_v2(
         voice_style = (niche.content_style or {}).get("voice_style", "natural e envolvente")
         content_style_label = (niche.content_style or {}).get("style", "entertainment")
 
+        # Modo "com referência": carregar o vídeo bruto vinculado à decisão
+        raw_video: RawVideo | None = None
+        if decision.raw_video_id:
+            rv_result = await session.execute(
+                select(RawVideo).where(RawVideo.id == decision.raw_video_id)
+            )
+            raw_video = rv_result.scalar_one_or_none()
+            if raw_video:
+                logger.info(
+                    "RENDERER v2 modo 'com referência' | video=%s (%.60s)",
+                    raw_video.id, raw_video.title or raw_video.original_filename,
+                )
+            else:
+                logger.warning(
+                    "RENDERER v2: decision.raw_video_id=%s não encontrado — caindo para modo 100%% IA",
+                    decision.raw_video_id,
+                )
+
     # 2. Criar ContentItem placeholder + marcar decisão como executing
     async with AsyncSessionLocal() as session:
         item = ContentItem(
@@ -220,18 +332,38 @@ async def run_renderer_v2(
     else:
         trend_context = "Sem tendências recentes — usar criatividade baseada no nicho."
 
-    prompt = USER_PROMPT.format(
-        niche_name=niche.niche_name,
-        platform=decision.selected_platform or "youtube",
-        target_audience=niche.raw_notes or "público geral",
-        voice_style=voice_style,
-        content_style=content_style_label,
-        selected_topic=decision.selected_topic or "",
-        selected_archetype=decision.selected_archetype or "viral_hook",
-        hypothesis=decision.hypothesis,
-        confidence_score=int((decision.confidence_score or 0.75) * 100),
-        trend_context=trend_context,
-    )
+    is_editing_mode = raw_video is not None
+    if is_editing_mode:
+        dur = raw_video.duration_seconds
+        prompt = USER_PROMPT_EDITING.format(
+            niche_name=niche.niche_name,
+            platform=decision.selected_platform or "youtube",
+            target_audience=niche.raw_notes or "público geral",
+            voice_style=voice_style,
+            content_style=content_style_label,
+            video_title=raw_video.title or raw_video.original_filename,
+            video_duration=f"{dur:.0f} segundos" if dur else "desconhecida",
+            video_tags=", ".join(raw_video.tags or []) or "nenhuma",
+            video_description=(raw_video.description or "nenhuma")[:500],
+            selected_topic=decision.selected_topic or "",
+            selected_archetype=decision.selected_archetype or "viral_hook",
+            hypothesis=decision.hypothesis,
+            confidence_score=int((decision.confidence_score or 0.75) * 100),
+            trend_context=trend_context,
+        )
+    else:
+        prompt = USER_PROMPT.format(
+            niche_name=niche.niche_name,
+            platform=decision.selected_platform or "youtube",
+            target_audience=niche.raw_notes or "público geral",
+            voice_style=voice_style,
+            content_style=content_style_label,
+            selected_topic=decision.selected_topic or "",
+            selected_archetype=decision.selected_archetype or "viral_hook",
+            hypothesis=decision.hypothesis,
+            confidence_score=int((decision.confidence_score or 0.75) * 100),
+            trend_context=trend_context,
+        )
 
     if extra_instructions and extra_instructions.strip():
         prompt += f"\n\nINSTRUÇÕES ADICIONAIS DO CRIADOR:\n{extra_instructions.strip()}"
@@ -287,21 +419,42 @@ async def run_renderer_v2(
 
     await _update_progress(item_id, 80, "salvando artefatos…")
 
-    # 5. Montar script texto
-    rot = data.get("roteiro", {})
+    # 5. Montar script texto (formato conforme o modo)
     titulos = data.get("titulos", [decision.selected_topic or "Conteúdo"])
     titulo_principal = titulos[0] if titulos else (decision.selected_topic or "Conteúdo")
 
-    dev_lines = "\n".join(
-        f"  {i+1}. {c}" for i, c in enumerate(rot.get("desenvolvimento", []))
-    )
-    script_text = (
-        f"# {titulo_principal}\n\n"
-        f"## 🎣 HOOK\n{rot.get('hook', '')}\n\n"
-        f"## 🎬 DESENVOLVIMENTO\n{dev_lines}\n\n"
-        f"## ⚡ CLÍMAX\n{rot.get('climax', '')}\n\n"
-        f"## 📣 CALL TO ACTION\n{rot.get('cta', '')}\n"
-    )
+    rot = data.get("roteiro", {})
+    plano = data.get("plano_edicao", {})
+
+    if is_editing_mode and plano:
+        cortes_lines = "\n".join(
+            f"  • [{c.get('inicio', '?')}s–{c.get('fim', '?')}s] ({c.get('prioridade', 'recomendado')}) "
+            f"{c.get('tipo', 'cut')}: {c.get('descricao', '')}"
+            for c in plano.get("cortes", [])
+        )
+        textos_lines = "\n".join(
+            f"  • [{t.get('inicio', '?')}s–{t.get('fim', '?')}s] {t.get('texto', '')}"
+            for t in plano.get("textos_tela", [])
+        )
+        script_text = (
+            f"# PLANO DE EDIÇÃO — {titulo_principal}\n\n"
+            f"## 🎣 HOOK\nMomento do hook: {plano.get('hook_timestamp', '?')}s do vídeo bruto\n\n"
+            f"## ✂️ CORTES\n{cortes_lines}\n\n"
+            f"## 💬 TEXTOS NA TELA\n{textos_lines}\n\n"
+            f"## 🎵 TRILHA\n{plano.get('trilha_sonora') or 'áudio original'}\n\n"
+            f"## 📝 NOTAS DE PRODUÇÃO\n{plano.get('notas_producao', '')}\n"
+        )
+    else:
+        dev_lines = "\n".join(
+            f"  {i+1}. {c}" for i, c in enumerate(rot.get("desenvolvimento", []))
+        )
+        script_text = (
+            f"# {titulo_principal}\n\n"
+            f"## 🎣 HOOK\n{rot.get('hook', '')}\n\n"
+            f"## 🎬 DESENVOLVIMENTO\n{dev_lines}\n\n"
+            f"## ⚡ CLÍMAX\n{rot.get('climax', '')}\n\n"
+            f"## 📣 CALL TO ACTION\n{rot.get('cta', '')}\n"
+        )
 
     # 6. Salvar resultado completo
     async with AsyncSessionLocal() as session:
@@ -312,18 +465,29 @@ async def run_renderer_v2(
 
         item.title = titulo_principal
         item.script = script_text
-        item.duration_seconds = float(data.get("duracao_estimada_segundos", 60))
+        default_dur = plano.get("duracao_final_segundos", 60) if (is_editing_mode and plano) else 60
+        item.duration_seconds = float(data.get("duracao_estimada_segundos", default_dur))
         item.status = ContentStatus.review
-        item.production_meta = {
+        meta = {
             "render_progress": 100,
             "render_stage": "concluído",
-            "roteiro": rot,
+            "mode": "editing_plan" if (is_editing_mode and plano) else "new_script",
             "titulos": titulos,
             "thumbnails": data.get("thumbnails", []),
             "seo": data.get("seo", {}),
             "plano_postagem": data.get("plano_postagem", {}),
             "checklist_producao": data.get("checklist_producao", []),
         }
+        if is_editing_mode and plano:
+            meta["plano_edicao"] = plano
+            meta["raw_video"] = {
+                "id": str(raw_video.id),
+                "title": raw_video.title or raw_video.original_filename,
+                "duration_seconds": raw_video.duration_seconds,
+            }
+        else:
+            meta["roteiro"] = rot
+        item.production_meta = meta
         dec.status = DecisionStatus.done
         await session.commit()
         await session.refresh(item)

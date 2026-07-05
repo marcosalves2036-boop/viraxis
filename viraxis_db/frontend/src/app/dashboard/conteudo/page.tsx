@@ -19,7 +19,23 @@ interface ContentItem {
   office_name?: string;
 }
 
+
+interface CorteEdicao { inicio?: number; fim?: number; tipo: string; descricao: string; prioridade?: string }
+interface TextoTela { inicio?: number; fim?: number; texto: string }
+interface PlanoEdicao {
+  hook_timestamp?: number;
+  cortes?: CorteEdicao[];
+  textos_tela?: TextoTela[];
+  trilha_sonora?: string | null;
+  duracao_final_segundos?: number;
+  notas_producao?: string;
+}
+
 interface ProductionMeta {
+  mode?: "editing_plan" | "new_script";
+  plano_edicao?: PlanoEdicao;
+  raw_video?: { id: string; title: string; duration_seconds?: number };
+
   render_progress?: number;
   render_stage?: string;
   roteiro?: { hook: string; desenvolvimento: string[]; climax: string; cta: string };
@@ -72,7 +88,7 @@ function ContentModal({ item, onClose, onDelete }: { item: ContentItem; onClose:
   }
 
   const tabs = [
-    { id: "roteiro" as const, label: "📝 Roteiro" },
+    { id: "roteiro" as const, label: meta.plano_edicao ? "✂️ Edição" : "📝 Roteiro" },
     { id: "thumbnails" as const, label: "🖼 Thumbnails" },
     { id: "seo" as const, label: "📊 SEO" },
     { id: "plano" as const, label: "📅 Plano" },
@@ -132,7 +148,60 @@ function ContentModal({ item, onClose, onDelete }: { item: ContentItem; onClose:
           {/* ROTEIRO */}
           {activeTab === "roteiro" && (
             <div className="space-y-4">
-              {meta.roteiro ? (
+              {meta.plano_edicao ? (
+                <>
+                  {meta.raw_video && (
+                    <div className="bg-white/[0.04] border border-white/10 rounded-xl p-3 flex items-center justify-between gap-2">
+                      <p className="text-white/50 text-xs">🎞 Vídeo bruto: <span className="text-white/80">{meta.raw_video.title}</span></p>
+                      {meta.raw_video.duration_seconds && <span className="text-white/30 text-xs">{Math.round(meta.raw_video.duration_seconds)}s brutos</span>}
+                    </div>
+                  )}
+                  <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-4">
+                    <p className="text-xs font-semibold text-yellow-400 uppercase tracking-wider mb-1.5">🎣 Hook</p>
+                    <p className="text-white/75 text-sm">Começa aos <strong>{meta.plano_edicao.hook_timestamp ?? "?"}s</strong> do vídeo bruto — usar como abertura do vídeo final.</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold text-white/40 uppercase tracking-wider mb-2">✂️ Cortes</p>
+                    <div className="space-y-2">
+                      {(meta.plano_edicao.cortes ?? []).map((c, i) => (
+                        <div key={i} className="flex gap-3 bg-white/[0.03] rounded-xl p-3 items-start">
+                          <span className="text-violet-400 font-mono text-xs shrink-0 mt-0.5">{c.inicio ?? "?"}s–{c.fim ?? "?"}s</span>
+                          <div className="flex-1">
+                            <p className="text-white/65 text-sm leading-relaxed">{c.descricao}</p>
+                            <p className="text-[10px] mt-1">
+                              <span className="text-white/30 uppercase">{c.tipo}</span>
+                              {c.prioridade && <span className={`ml-2 px-1.5 py-0.5 rounded ${c.prioridade === "essencial" ? "bg-red-500/15 text-red-400" : c.prioridade === "recomendado" ? "bg-amber-500/15 text-amber-400" : "bg-white/10 text-white/40"}`}>{c.prioridade}</span>}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  {(meta.plano_edicao.textos_tela ?? []).length > 0 && (
+                    <div>
+                      <p className="text-xs font-semibold text-white/40 uppercase tracking-wider mb-2">💬 Textos na tela</p>
+                      <div className="space-y-2">
+                        {(meta.plano_edicao.textos_tela ?? []).map((t, i) => (
+                          <div key={i} className="flex gap-3 bg-white/[0.03] rounded-xl p-3">
+                            <span className="text-cyan-400 font-mono text-xs shrink-0 mt-0.5">{t.inicio ?? "?"}s–{t.fim ?? "?"}s</span>
+                            <p className="text-white/75 text-sm font-semibold">{t.texto}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-4">
+                    <p className="text-xs font-semibold text-emerald-400 uppercase tracking-wider mb-1.5">🎵 Trilha & duração final</p>
+                    <p className="text-white/75 text-sm">{meta.plano_edicao.trilha_sonora || "Manter áudio original"} • final ~{meta.plano_edicao.duracao_final_segundos ?? "?"}s</p>
+                  </div>
+                  {meta.plano_edicao.notas_producao && (
+                    <div className="bg-violet-500/10 border border-violet-500/20 rounded-xl p-4">
+                      <p className="text-xs font-semibold text-violet-400 uppercase tracking-wider mb-1.5">📝 Notas de produção</p>
+                      <p className="text-white/75 text-sm leading-relaxed">{meta.plano_edicao.notas_producao}</p>
+                    </div>
+                  )}
+                </>
+              ) : meta.roteiro ? (
                 <>
                   <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-4">
                     <p className="text-xs font-semibold text-yellow-400 uppercase tracking-wider mb-1.5">🎣 Hook (primeiros segundos)</p>
@@ -478,6 +547,9 @@ function ConteudoInner() {
                       <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${STATUS_STYLES[item.status]}`}>
                         {STATUS_LABELS[item.status]}
                       </span>
+                      {meta.mode === "editing_plan" && (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">✂️ com referência</span>
+                      )}
                       {item.office_name && (
                         <span className="text-[10px] text-white/25 truncate">{item.office_name}</span>
                       )}
@@ -526,6 +598,7 @@ function ConteudoInner() {
                   {/* Artifacts preview */}
                   {isReady && (
                     <div className="flex flex-wrap gap-1.5 mb-3">
+                      {meta.plano_edicao && <span className="text-[10px] px-2 py-0.5 rounded-md bg-cyan-500/10 text-cyan-400">✂️ Plano de edição</span>}
                       {meta.roteiro && <span className="text-[10px] px-2 py-0.5 rounded-md bg-white/[0.06] text-white/40">📝 Roteiro</span>}
                       {meta.thumbnails && meta.thumbnails.length > 0 && <span className="text-[10px] px-2 py-0.5 rounded-md bg-white/[0.06] text-white/40">🖼 {meta.thumbnails.length} thumbnails</span>}
                       {meta.seo && <span className="text-[10px] px-2 py-0.5 rounded-md bg-white/[0.06] text-white/40">📊 SEO</span>}
@@ -538,7 +611,7 @@ function ConteudoInner() {
                     {item.duration_seconds && <span>⏱ {Math.round(item.duration_seconds)}s</span>}
                     {(isReady || isReview) && (
                       <button onClick={() => setSelectedItem(item)} className="text-violet-400/60 hover:text-violet-300 transition-colors">
-                        Ver roteiro →
+                        {meta.plano_edicao ? "Ver plano →" : "Ver roteiro →"}
                       </button>
                     )}
                   </div>

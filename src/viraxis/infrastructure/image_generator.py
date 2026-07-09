@@ -106,8 +106,12 @@ async def generate_scene_image(
     *,
     width: int = 1080,
     height: int = 1920,
+    seed: int | None = None,
 ) -> bytes:
     """Gera 1 imagem para a cena e retorna os bytes.
+
+    Args:
+        seed: semente distinta por cena → garante imagens variadas e reproduzíveis.
 
     Raises:
         ImageGenerationError: se todas as tentativas falharem.
@@ -115,7 +119,10 @@ async def generate_scene_image(
     prompt = await _optimize_prompt(visual_description)
     full_prompt = f"{prompt}{_STYLE_SUFFIX}"[:_PROMPT_MAX_CHARS]
 
-    query = urlencode({"width": width, "height": height, "model": _MODEL, "nologo": "true"})
+    params = {"width": width, "height": height, "model": _MODEL, "nologo": "true"}
+    if seed is not None:
+        params["seed"] = int(seed) % 2_147_483_647
+    query = urlencode(params)
     url = f"{_POLLINATIONS_BASE}{quote(full_prompt, safe='')}?{query}"
 
     headers = {"User-Agent": "viraxis/1.0"}

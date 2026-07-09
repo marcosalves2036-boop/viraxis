@@ -18,6 +18,7 @@ Não altera o fluxo ``mode=editing_plan`` (``video_processor.apply_editing_plan`
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import shutil
@@ -52,9 +53,10 @@ _BRAND_COLORS = ("0x000000", "0x1a0033")  # preto, roxo escuro
 _BUNDLED_FONTS_DIR = os.path.join(os.path.dirname(__file__), "assets", "fonts")
 _SYSTEM_FONTS_DIR = "/usr/share/fonts/truetype/dejavu"
 _SUBTITLE_STYLE = (
-    "FontName=DejaVu Sans,Fontsize=16,Bold=1,"
+    # Montserrat ExtraBold (empacotada no repo) — visual moderno para Shorts.
+    "FontName=Montserrat ExtraBold,Fontsize=16,Bold=0,"
     "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BackColour=&H80000000,"
-    "BorderStyle=1,Outline=2,Shadow=1,Alignment=2,MarginV=90"
+    "BorderStyle=1,Outline=3,Shadow=1,Alignment=2,MarginV=90"
 )
 
 ProgressCb = Callable[[int, str], Awaitable[None]] | Callable[[int, str], None] | None
@@ -283,7 +285,10 @@ async def compose_ai_video_v2(
             img_path: Path | None = None
             if scene.has_image:
                 try:
-                    img_bytes = await generate_scene_image(scene.visual_description or scene.narration)
+                    scene_seed = int(hashlib.sha1(f"{item_id}:{i}".encode()).hexdigest()[:8], 16)
+                    img_bytes = await generate_scene_image(
+                        scene.visual_description or scene.narration, seed=scene_seed
+                    )
                     img_path = tmp / f"img_{i}.bin"
                     img_path.write_bytes(img_bytes)
                 except ImageGenerationError as e:

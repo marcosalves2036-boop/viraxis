@@ -1,24 +1,26 @@
-"""Image Generator — uma imagem por cena via Pollinations.ai (FLUX).
+"""Image Generator — uma imagem por cena, com múltiplos provedores.
+
+Ordem de provedores (fallback automático):
+  1. Together AI — FLUX.1 [schnell] (grátis) — usado se ``TOGETHER_API_KEY``
+     estiver no ambiente. Confiável e mantém o "look" FLUX.
+  2. Pollinations.ai (FLUX) — público, sem key. Fica como fallback (instável).
 
 Fluxo por cena:
   1. LLM (litellm/Groq, mesmo provider do RENDERER) traduz/otimiza a
-     ``visual_description`` em PT-BR para um prompt de text-to-image em inglês.
-  2. ``GET https://image.pollinations.ai/prompt/{prompt}?width=1080&height=1920&model=flux&nologo=true``
-  3. timeout 30s + retry (3 tentativas no total), retorna os bytes da imagem.
+     ``visual_description`` (PT-BR) em um prompt de text-to-image em inglês.
+  2. Tenta cada provedor na ordem; retorna os bytes da 1ª imagem válida.
+  3. Se todos falharem, levanta ``ImageGenerationError`` — o compositor então
+     usa fundo sólido da marca para aquela cena (não derruba o vídeo).
 
-Pollinations é público (sem API key). Opcionalmente, se ``POLLINATIONS_API_KEY``
-estiver no ambiente, é enviado como ``Authorization: Bearer`` (chaves ``sk_``
-removem rate limit — ver docs.pollinations.ai).
-
-Nota de robustez: a geração ao vivo depende da origem do Pollinations estar no ar.
-Se a chamada falhar após os retries, esta função levanta ``ImageGenerationError`` —
-cabe ao compositor decidir o fallback (fundo sólido da marca) para não derrubar
-o vídeo inteiro por causa de uma cena.
+Config por ambiente:
+  - ``TOGETHER_API_KEY``     → habilita o Together como provedor primário.
+  - ``POLLINATIONS_API_KEY`` → opcional (bearer) para o Pollinations.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import os
 from urllib.parse import quote, urlencode
@@ -29,13 +31,21 @@ from viraxis.config import get_settings
 
 logger = logging.getLogger(__name__)
 
+# ── Pollinations ─────────────────────────────────────────────────────────────────
 _POLLINATIONS_BASE = "https://image.pollinations.ai/prompt/"
-_IMG_TIMEOUT = 30.0
-_MAX_ATTEMPTS = 3          # 1 tentativa + 2 retries
-_PROMPT_MAX_CHARS = 1200   # limite defensivo para o path da URL
-_MODEL = "flux"
+_POLLINATIONS_TIMEOUT = 30.0
+_POLLINATIONS_ATTEMPTS = 3
+_POLLINATIONS_MODEL = "flux"
 
-# assinaturas de imagem aceitas (PNG, JPEG, WEBP)
+# ── Together AI (FLUX.1 schnell — grátis) ────────────────────────────────────────
+_TOGETHER_URL = "https://api.together.xyz/v1/images/generations"
+_TOGETHER_MODEL = "black-forest-labs/FLUX.1-schnell-Free"
+_TOGETHER_TIMEOUT = 60.0
+_TOGETHER_ATTEMPTS = 2
+_TOGETHER_MAX_DIM = 1440   # limite do tier free; escalamos mantendo o 9:16
+_TOGETHER_STEPS = 4        # schnell: 1–4
+
+_PROMPT_MAX_CHARS = 1200
 _IMAGE_SIGNATURES = (b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff", b"RIFF")
 
 _PROMPT_SYSTEM = (
@@ -55,21 +65,18 @@ _STYLE_SUFFIX = (
 
 
 class ImageGenerationError(RuntimeError):
-    """Falha ao gerar/baixar a imagem da cena após todos os retries."""
+    """Falha ao gerar/baixar a imagem da cena após todos os provedores/retries."""
 
 
 async def _optimize_prompt(visual_description: str) -> str:
-    """Traduz/otimiza a descrição PT-BR em um prompt EN para o modelo de imagem.
-
-    Fallback seguro: se o LLM falhar, usa a própria descrição (limpa) como prompt.
-    """
+    """Traduz/otimiza a descrição PT-BR em um prompt EN para o modelo de imagem."""
     description = " ".join((visual_description or "").split())
     if not description:
         return "abstract cinematic vertical background, dark moody neon lighting"
 
     settings = get_settings()
     try:
-        import litellm  # import lazy — dependência só usada aqui
+        import litellm
 
         litellm.set_verbose = False
         response = await litellm.acompletion(
@@ -87,18 +94,124 @@ async def _optimize_prompt(visual_description: str) -> str:
         if prompt:
             logger.info("image_generator: prompt otimizado (%d chars)", len(prompt))
             return prompt[:_PROMPT_MAX_CHARS]
-    except Exception as e:  # noqa: BLE001 — qualquer erro do LLM cai no fallback
+    except Exception as e:  # noqa: BLE001
         logger.warning("image_generator: otimização de prompt falhou (%s) — usando descrição crua", e)
 
     return description[:_PROMPT_MAX_CHARS]
 
 
-def _looks_like_image(content: bytes, content_type: str) -> bool:
+def _looks_like_image(content: bytes, content_type: str = "") -> bool:
     if not content or len(content) < 1000:
         return False
     if content_type.startswith("image/"):
         return True
     return content.startswith(_IMAGE_SIGNATURES)
+
+
+def _clamp_together_dims(width: int, height: int) -> tuple[int, int]:
+    """Escala p/ caber no limite do Together mantendo o 9:16, múltiplos de 16."""
+    scale = min(1.0, _TOGETHER_MAX_DIM / max(width, height))
+
+    def _round16(v: float) -> int:
+        return max(16, int(round(v * scale / 16)) * 16)
+
+    return _round16(width), _round16(height)
+
+
+# ── Provedor: Together AI ────────────────────────────────────────────────────────
+
+async def _generate_together(full_prompt: str, width: int, height: int, seed: int | None) -> bytes:
+    api_key = os.environ.get("TOGETHER_API_KEY", "").strip()
+    if not api_key:
+        raise ImageGenerationError("TOGETHER_API_KEY ausente")
+
+    w, h = _clamp_together_dims(width, height)
+    payload = {
+        "model": _TOGETHER_MODEL,
+        "prompt": full_prompt,
+        "width": w,
+        "height": h,
+        "steps": _TOGETHER_STEPS,
+        "n": 1,
+        "response_format": "b64_json",
+    }
+    if seed is not None:
+        payload["seed"] = int(seed) % 2_147_483_647
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
+    last_error: object = None
+    for attempt in range(1, _TOGETHER_ATTEMPTS + 1):
+        try:
+            async with httpx.AsyncClient(timeout=_TOGETHER_TIMEOUT) as client:
+                resp = await client.post(_TOGETHER_URL, json=payload, headers=headers)
+            if resp.status_code == 200:
+                data = (resp.json() or {}).get("data") or []
+                if data:
+                    item = data[0]
+                    b64 = item.get("b64_json")
+                    if b64:
+                        raw = base64.b64decode(b64)
+                        if _looks_like_image(raw):
+                            logger.info("image_generator[together] OK | tentativa=%d | bytes=%d", attempt, len(raw))
+                            return raw
+                    url = item.get("url")
+                    if url:
+                        async with httpx.AsyncClient(timeout=_TOGETHER_TIMEOUT, follow_redirects=True) as c2:
+                            img = await c2.get(url)
+                        if img.status_code == 200 and _looks_like_image(img.content, img.headers.get("content-type", "")):
+                            logger.info("image_generator[together] OK (url) | tentativa=%d | bytes=%d", attempt, len(img.content))
+                            return img.content
+                last_error = f"resposta sem imagem utilizável ({resp.status_code})"
+            else:
+                last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
+        except Exception as e:  # noqa: BLE001
+            last_error = e
+        logger.warning("image_generator[together] tentativa %d/%d falhou: %s", attempt, _TOGETHER_ATTEMPTS, last_error)
+        if attempt < _TOGETHER_ATTEMPTS:
+            await asyncio.sleep(2 * attempt)
+    raise ImageGenerationError(f"Together falhou: {last_error}")
+
+
+# ── Provedor: Pollinations ───────────────────────────────────────────────────────
+
+async def _generate_pollinations(full_prompt: str, width: int, height: int, seed: int | None) -> bytes:
+    params = {"width": width, "height": height, "model": _POLLINATIONS_MODEL, "nologo": "true"}
+    if seed is not None:
+        params["seed"] = int(seed) % 2_147_483_647
+    url = f"{_POLLINATIONS_BASE}{quote(full_prompt, safe='')}?{urlencode(params)}"
+
+    headers = {"User-Agent": "viraxis/1.0"}
+    api_key = os.environ.get("POLLINATIONS_API_KEY", "").strip()
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    last_error: object = None
+    for attempt in range(1, _POLLINATIONS_ATTEMPTS + 1):
+        try:
+            async with httpx.AsyncClient(timeout=_POLLINATIONS_TIMEOUT, follow_redirects=True) as client:
+                resp = await client.get(url, headers=headers)
+            ctype = resp.headers.get("content-type", "")
+            if resp.status_code == 200 and _looks_like_image(resp.content, ctype):
+                logger.info("image_generator[pollinations] OK | tentativa=%d | bytes=%d", attempt, len(resp.content))
+                return resp.content
+            last_error = f"HTTP {resp.status_code} ctype={ctype!r} bytes={len(resp.content or b'')}"
+        except Exception as e:  # noqa: BLE001
+            last_error = e
+        logger.warning("image_generator[pollinations] tentativa %d/%d falhou: %s", attempt, _POLLINATIONS_ATTEMPTS, last_error)
+        if attempt < _POLLINATIONS_ATTEMPTS:
+            await asyncio.sleep(2 * attempt)
+    raise ImageGenerationError(f"Pollinations falhou: {last_error}")
+
+
+# ── API pública ──────────────────────────────────────────────────────────────────
+
+def _provider_chain():
+    """Ordem dos provedores conforme as keys disponíveis."""
+    chain = []
+    if os.environ.get("TOGETHER_API_KEY", "").strip():
+        chain.append(("together", _generate_together))
+    chain.append(("pollinations", _generate_pollinations))
+    return chain
 
 
 async def generate_scene_image(
@@ -110,48 +223,21 @@ async def generate_scene_image(
 ) -> bytes:
     """Gera 1 imagem para a cena e retorna os bytes.
 
-    Args:
-        seed: semente distinta por cena → garante imagens variadas e reproduzíveis.
+    Tenta os provedores em ordem (Together → Pollinations). Se ``seed`` for dado,
+    as imagens ficam variadas por cena e reproduzíveis.
 
     Raises:
-        ImageGenerationError: se todas as tentativas falharem.
+        ImageGenerationError: se todos os provedores falharem.
     """
     prompt = await _optimize_prompt(visual_description)
     full_prompt = f"{prompt}{_STYLE_SUFFIX}"[:_PROMPT_MAX_CHARS]
 
-    params = {"width": width, "height": height, "model": _MODEL, "nologo": "true"}
-    if seed is not None:
-        params["seed"] = int(seed) % 2_147_483_647
-    query = urlencode(params)
-    url = f"{_POLLINATIONS_BASE}{quote(full_prompt, safe='')}?{query}"
-
-    headers = {"User-Agent": "viraxis/1.0"}
-    api_key = os.environ.get("POLLINATIONS_API_KEY", "").strip()
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-
-    last_error: Exception | str | None = None
-    for attempt in range(1, _MAX_ATTEMPTS + 1):
+    errors: list[str] = []
+    for name, fn in _provider_chain():
         try:
-            async with httpx.AsyncClient(timeout=_IMG_TIMEOUT, follow_redirects=True) as client:
-                resp = await client.get(url, headers=headers)
-            ctype = resp.headers.get("content-type", "")
-            if resp.status_code == 200 and _looks_like_image(resp.content, ctype):
-                logger.info(
-                    "image_generator OK | tentativa=%d | bytes=%d | ctype=%s",
-                    attempt, len(resp.content), ctype,
-                )
-                return resp.content
-            last_error = f"HTTP {resp.status_code} ctype={ctype!r} bytes={len(resp.content or b'')}"
-        except Exception as e:  # noqa: BLE001
-            last_error = e
+            return await fn(full_prompt, width, height, seed)
+        except ImageGenerationError as e:
+            errors.append(f"{name}: {e}")
+            logger.warning("image_generator: provedor '%s' falhou, tentando próximo", name)
 
-        logger.warning(
-            "image_generator tentativa %d/%d falhou: %s", attempt, _MAX_ATTEMPTS, last_error
-        )
-        if attempt < _MAX_ATTEMPTS:
-            await asyncio.sleep(2 * attempt)  # backoff simples: 2s, 4s
-
-    raise ImageGenerationError(
-        f"Pollinations não retornou imagem após {_MAX_ATTEMPTS} tentativas: {last_error}"
-    )
+    raise ImageGenerationError("todos os provedores falharam → " + " | ".join(errors))

@@ -15,7 +15,7 @@ function Navbar() {
         </nav>
         <div className="flex items-center gap-3">
           <Link href="/login" className="text-sm text-white/60 hover:text-white transition-colors px-4 py-2">
-            Entrar
+            Login
           </Link>
           <Link href="/cadastro" className="text-sm bg-violet-600 hover:bg-violet-500 text-white px-4 py-2 rounded-lg transition-colors font-medium">
             Começar grátis

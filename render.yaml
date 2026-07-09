@@ -4,7 +4,7 @@ services:
     runtime: python
     plan: free
     # Root dir = raiz do repo (onde fica pyproject.toml e src/)
-    buildCommand: pip install -e . && mkdir -p .ffmpeg && curl -fsSL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz -o /tmp/ffmpeg.tar.xz && tar -xJf /tmp/ffmpeg.tar.xz --strip-components=1 -C .ffmpeg --wildcards '*/ffmpeg' && .ffmpeg/ffmpeg -version | head -1
+    buildCommand: pip install -e . && mkdir -p .ffmpeg && curl -fsSL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz -o /tmp/ffmpeg.tar.xz && tar -xJf /tmp/ffmpeg.tar.xz --strip-components=1 -C .ffmpeg --wildcards '*/ffmpeg' '*/ffprobe' && .ffmpeg/ffmpeg -version | head -1 && .ffmpeg/ffprobe -version | head -1 && (.ffmpeg/ffmpeg -hide_banner -filters | grep -q ' subtitles ' && echo 'LIBASS_OK: filtro subtitles presente' || echo 'LIBASS_MISSING: filtro subtitles ausente')
     startCommand: export PATH="$PWD/.ffmpeg:$PATH" && ffmpeg -version | head -1 && alembic upgrade head && uvicorn viraxis.api.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:

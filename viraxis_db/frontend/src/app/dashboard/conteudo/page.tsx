@@ -518,18 +518,49 @@ function ConteudoInner() {
     // 3. Disparar process-video direto no Render (evita timeout 10s do proxy Vercel)
     try {
       const result = await contentApi.processVideo(officeId, itemId);
-      const currentMeta = items.find(i => i.id === itemId)?.production_meta ?? ({} as ProductionMeta);
-      updateItem(itemId, {
-        status: "ready",
-        production_meta: { ...currentMeta, video_url: result.video_url },
-      });
+      if (result.status === "ready" && result.video_url) {
+        // modo síncrono (editing_plan): vídeo já pronto
+        const currentMeta = items.find(i => i.id === itemId)?.production_meta ?? ({} as ProductionMeta);
+        updateItem(itemId, {
+          status: "ready",
+          production_meta: { ...currentMeta, video_url: result.video_url },
+        });
+        setGeneratingItems(prev => { const s = new Set(prev); s.delete(itemId); return s; });
+      } else {
+        // modo 100% IA (assíncrono): backend processa em background → acompanha via polling
+        updateItem(itemId, { status: "rendering" });
+        pollItemUntilDone(officeId, itemId);
+      }
     } catch (err) {
       console.error("Erro ao gerar vídeo:", err);
       // Rollback visual: voltar para review para o usuário tentar de novo
       updateItem(itemId, { status: "review" });
-    } finally {
       setGeneratingItems(prev => { const s = new Set(prev); s.delete(itemId); return s; });
     }
+  }
+
+  // Polling do modo 100% IA: consulta o GET de conteúdo até o vídeo ficar pronto/falhar.
+  async function pollItemUntilDone(officeId: string, itemId: string) {
+    const started = Date.now();
+    const TIMEOUT_MS = 8 * 60 * 1000;
+    const clearGen = () =>
+      setGeneratingItems(prev => { const s = new Set(prev); s.delete(itemId); return s; });
+    while (Date.now() - started < TIMEOUT_MS) {
+      await new Promise(res => setTimeout(res, 3000));
+      try {
+        const r = await fetch(`/api/offices/${officeId}/content`, { headers });
+        if (!r.ok) continue;
+        const data: ContentItem[] = await r.json();
+        const it = data.find(i => i.id === itemId);
+        if (!it) continue;
+        updateItem(itemId, { status: it.status, production_meta: it.production_meta });
+        if (["ready", "published", "failed", "review"].includes(it.status)) {
+          clearGen();
+          return;
+        }
+      } catch { /* rede instável — tenta de novo no próximo ciclo */ }
+    }
+    clearGen();
   }
 
   async function rejectItem(itemId: string, officeId: string) {

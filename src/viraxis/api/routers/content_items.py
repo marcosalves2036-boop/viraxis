@@ -8,10 +8,11 @@ Endpoints:
   DELETE /offices/{office_id}/content-items/{item_id}     → soft delete
 """
 
+import logging
 from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +22,8 @@ from viraxis.domain.models.content_item import ContentItem, ContentStatus
 from viraxis.domain.models.office import Office
 from viraxis.domain.models.user import User
 from viraxis.infrastructure.repositories.content_item import ContentItemRepository
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/offices", tags=["content-items"])
 
@@ -284,6 +287,94 @@ def _extract_script_for_tts(item: ContentItem) -> str:
     return text.strip()
 
 
+# ── Composição 100% IA v2 — execução assíncrona (BackgroundTasks) ────────────────
+
+async def _merge_item_meta(item_id, patch: dict) -> None:
+    """Faz merge (jsonb ||) de `patch` no production_meta sem sobrescrever o resto."""
+    import json as _json
+
+    from sqlalchemy import text
+
+    from viraxis.infrastructure.database.session import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as s:
+        await s.execute(
+            text(
+                "UPDATE content_items "
+                "SET production_meta = COALESCE(production_meta, '{}'::jsonb) || CAST(:patch AS jsonb) "
+                "WHERE id = CAST(:item_id AS uuid)"
+            ),
+            {"patch": _json.dumps(patch), "item_id": str(item_id)},
+        )
+        await s.commit()
+
+
+async def _compose_ai_video_v2_background(item_id) -> None:
+    """Roda compose_ai_video_v2 fora da request; atualiza status/progresso no DB.
+
+    Mesmo padrão do RENDERER (offices._run_renderer_safe): sessão própria,
+    nunca propaga exceção, grava erro no production_meta para depuração.
+    """
+    from viraxis.infrastructure.database.session import AsyncSessionLocal
+    from viraxis.infrastructure.video_composer_v2 import compose_ai_video_v2
+
+    try:
+        async with AsyncSessionLocal() as s:
+            item = await s.get(ContentItem, item_id)
+            if item is None:
+                logger.error("compose v2 bg: item %s não encontrado", item_id)
+                return
+            meta = dict(item.production_meta or {})
+            script_text = _extract_script_for_tts(item)
+
+        async def _cb(pct: int, stage: str) -> None:
+            await _merge_item_meta(item_id, {"render_progress": pct, "render_stage": stage})
+
+        dest_path, video_url = await compose_ai_video_v2(
+            meta, script_text, str(item_id), progress_cb=_cb
+        )
+
+        async with AsyncSessionLocal() as s:
+            item = await s.get(ContentItem, item_id)
+            if item is None:
+                return
+            item.status = ContentStatus.ready
+            item.storage_path = dest_path
+            item.production_meta = {
+                **(item.production_meta or {}),
+                "video_url": video_url,
+                "video_storage_path": dest_path,
+                "render_progress": 100,
+                "render_stage": "concluído",
+            }
+            s.add(item)
+            await s.commit()
+        logger.info("compose v2 bg: OK | item=%s | path=%s", item_id, dest_path)
+
+    except Exception as e:  # noqa: BLE001 — background nunca deve derrubar o worker
+        import traceback
+
+        logger.error(
+            "compose v2 bg falhou | item=%s | %s",
+            item_id, f"{type(e).__name__}: {e}\n{traceback.format_exc()[-500:]}",
+        )
+        try:
+            async with AsyncSessionLocal() as s:
+                item = await s.get(ContentItem, item_id)
+                if item is not None:
+                    item.status = ContentStatus.failed
+                    item.production_meta = {
+                        **(item.production_meta or {}),
+                        "render_progress": 0,
+                        "render_stage": "falhou",
+                        "error": str(e)[:500],
+                    }
+                    s.add(item)
+                    await s.commit()
+        except Exception as db_err:  # noqa: BLE001
+            logger.error("compose v2 bg: falha ao gravar erro no DB | %s", db_err)
+
+
 @router.post(
     "/{office_id}/content-items/{item_id}/process-video",
     response_model=ProcessVideoResponse,
@@ -291,6 +382,7 @@ def _extract_script_for_tts(item: ContentItem) -> str:
 async def process_video(
     office_id: UUID,
     item_id: UUID,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -315,6 +407,32 @@ async def process_video(
         raise HTTPException(status_code=422, detail="Item ainda está sendo gerado pelo RENDERER.")
 
     mode = meta.get("mode") or ("editing_plan" if meta.get("plano_edicao") else "new_script")
+
+    # ── modo 100% IA v2: assíncrono (BackgroundTasks) ────────────────────────────
+    # Geração de N imagens IA + TTS + FFmpeg leva minutos → rodar síncrono na
+    # request estoura timeout. Dispara em background; o frontend acompanha via
+    # render_progress/render_stage no GET de detalhe (mesmo padrão do RENDERER).
+    if mode == "new_script":
+        script_text = _extract_script_for_tts(item)
+        if not script_text:
+            raise HTTPException(status_code=422, detail="Item sem script para narração.")
+        dest_path = f"ai_generated/{item_id}.mp4"
+        item.status = ContentStatus.rendering
+        item.production_meta = {
+            **meta,
+            "mode": "new_script",
+            "render_progress": 5,
+            "render_stage": "na fila",
+        }
+        session.add(item)
+        await session.commit()
+        background_tasks.add_task(_compose_ai_video_v2_background, item_id=item_id)
+        return ProcessVideoResponse(
+            video_url="",
+            storage_path=dest_path,
+            status=ContentStatus.rendering.value,
+            mode="new_script",
+        )
 
     try:
         if mode == "editing_plan":
@@ -347,14 +465,6 @@ async def process_video(
             dest_path, video_url = await apply_editing_plan(
                 raw_url, keep_segments, str(item_id)
             )
-
-        elif mode == "new_script":
-            from viraxis.infrastructure.video_composer import compose_ai_video
-
-            script_text = _extract_script_for_tts(item)
-            if not script_text:
-                raise HTTPException(status_code=422, detail="Item sem script para narração.")
-            dest_path, video_url = await compose_ai_video(script_text, str(item_id))
 
         else:
             raise HTTPException(status_code=422, detail=f"mode desconhecido: {mode}")

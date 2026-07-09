@@ -94,6 +94,25 @@ export default function ContentDetailPage() {
 
   const meta = item.production_meta;
 
+  // Polling do modo 100% IA: atualiza o item até o vídeo ficar pronto/falhar.
+  async function pollDetailUntilDone(oid: string, itemId: string) {
+    const started = Date.now();
+    const TIMEOUT_MS = 8 * 60 * 1000;
+    while (Date.now() - started < TIMEOUT_MS) {
+      await new Promise(res => setTimeout(res, 3000));
+      try {
+        const r = await fetch(`/api/offices/${oid}/content`, { headers: { Authorization: `Bearer ${token}` } });
+        if (!r.ok) continue;
+        const data: ContentItem[] = await r.json();
+        const it = data.find(i => i.id === itemId);
+        if (!it) continue;
+        setItem(it);
+        if (it.production_meta?.video_url) setVideoUrl(it.production_meta.video_url);
+        if (["ready", "published", "failed", "review"].includes(it.status)) return;
+      } catch { /* tenta de novo no próximo ciclo */ }
+    }
+  }
+
   async function handleGenerateVideo() {
     if (!officeId || generating) return;
     setGenerating(true);
@@ -108,8 +127,15 @@ export default function ContentDetailPage() {
         if (!ar.ok) throw new Error("Falha ao aprovar o roteiro");
       }
       const r = await content.processVideo(officeId, item!.id);
-      setVideoUrl(r.video_url);
-      setItem(prev => prev ? { ...prev, status: "ready" } : prev);
+      if (r.status === "ready" && r.video_url) {
+        // modo síncrono (editing_plan): já pronto
+        setVideoUrl(r.video_url);
+        setItem(prev => prev ? { ...prev, status: "ready" } : prev);
+      } else {
+        // modo 100% IA (assíncrono): acompanha via polling até concluir
+        setItem(prev => prev ? { ...prev, status: "rendering" } : prev);
+        await pollDetailUntilDone(officeId, item!.id);
+      }
     } catch (e) {
       setGenError(e instanceof Error ? e.message : "Erro ao gerar vídeo");
     } finally {

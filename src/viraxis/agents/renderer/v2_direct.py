@@ -48,13 +48,23 @@ DECISÃO DO BRAIN
 TENDÊNCIAS RECENTES
 {trend_context}
 
+SEPARAÇÃO ÁUDIO × IMAGEM (regra crítica): em cada cena, "narracao" é o ÚNICO texto
+que será FALADO (TTS) e LEGENDADO no vídeo — escreva só o que o público deve ouvir.
+"descricao_visual" descreve a imagem daquela cena e serve SOMENTE para gerar a imagem
+por IA; ela NUNCA é falada nem legendada. NÃO coloque marcações como "Cena 1",
+instruções de câmera ou descrições visuais dentro de "narracao".
+
 Retorne APENAS este JSON (todos os campos obrigatórios, sem texto antes ou depois):
 {{
   "roteiro": {{
-    "hook": "primeiros 3-5 segundos que capturam atenção imediata",
-    "desenvolvimento": ["Cena 1 — ação + narração exata", "Cena 2", "Cena 3"],
-    "climax": "momento de maior impacto/revelação do vídeo",
-    "cta": "call-to-action final específico para {platform}"
+    "hook": {{"narracao": "APENAS a fala do gancho (3-5s)", "descricao_visual": "APENAS a imagem do gancho — não é falada"}},
+    "desenvolvimento": [
+      {{"narracao": "APENAS a fala desta cena", "descricao_visual": "APENAS a imagem desta cena — não é falada"}},
+      {{"narracao": "fala da cena 2", "descricao_visual": "imagem da cena 2"}},
+      {{"narracao": "fala da cena 3", "descricao_visual": "imagem da cena 3"}}
+    ],
+    "climax": {{"narracao": "APENAS a fala do clímax", "descricao_visual": "APENAS a imagem do clímax — não é falada"}},
+    "cta": "call-to-action final FALADO, específico para {platform} (sem imagem)"
   }},
   "titulos": [
     "Título 1 — mais viral com emoji",
@@ -445,15 +455,24 @@ async def run_renderer_v2(
             f"## 📝 NOTAS DE PRODUÇÃO\n{plano.get('notas_producao', '')}\n"
         )
     else:
+        from viraxis.infrastructure.scene_extractor import split_scene_part
+
+        def _fmt_part(part) -> str:
+            narr, vis = split_scene_part(part)
+            return f"{narr}\n     🖼️ {vis}" if (vis and vis != narr) else narr
+
+        hook_txt = _fmt_part(rot.get("hook", ""))
+        climax_txt = _fmt_part(rot.get("climax", ""))
+        cta_txt, _ = split_scene_part(rot.get("cta", ""))
         dev_lines = "\n".join(
-            f"  {i+1}. {c}" for i, c in enumerate(rot.get("desenvolvimento", []))
+            f"  {i+1}. {_fmt_part(c)}" for i, c in enumerate(rot.get("desenvolvimento", []))
         )
         script_text = (
             f"# {titulo_principal}\n\n"
-            f"## 🎣 HOOK\n{rot.get('hook', '')}\n\n"
+            f"## 🎣 HOOK\n{hook_txt}\n\n"
             f"## 🎬 DESENVOLVIMENTO\n{dev_lines}\n\n"
-            f"## ⚡ CLÍMAX\n{rot.get('climax', '')}\n\n"
-            f"## 📣 CALL TO ACTION\n{rot.get('cta', '')}\n"
+            f"## ⚡ CLÍMAX\n{climax_txt}\n\n"
+            f"## 📣 CALL TO ACTION\n{cta_txt}\n"
         )
 
     # 6. Salvar resultado completo

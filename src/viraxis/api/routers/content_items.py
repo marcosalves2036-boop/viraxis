@@ -267,14 +267,18 @@ def _extract_script_for_tts(item: ContentItem) -> str:
     # v2_direct: roteiro estruturado
     rot = meta.get("roteiro") or {}
     if rot:
-        parts = [rot.get("hook", "")]
+        from viraxis.infrastructure.scene_extractor import split_scene_part
+
+        raw_parts = [rot.get("hook", "")]
         dev = rot.get("desenvolvimento") or []
         if isinstance(dev, list):
-            parts.extend(str(c) for c in dev)
+            raw_parts.extend(dev)
         else:
-            parts.append(str(dev))
-        parts.extend([rot.get("climax", ""), rot.get("cta", "")])
-        text = " ".join(x for x in parts if x)
+            raw_parts.append(dev)
+        raw_parts.extend([rot.get("climax", ""), rot.get("cta", "")])
+        # Só a narração (fala) — nunca a descrição visual das cenas
+        spoken = [split_scene_part(p)[0] for p in raw_parts]
+        text = " ".join(x for x in spoken if x)
         if text.strip():
             return text
     # runner CrewAI: full_script

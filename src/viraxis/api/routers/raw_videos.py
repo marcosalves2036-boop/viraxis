@@ -6,7 +6,7 @@ import uuid
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select as sa_select
@@ -17,6 +17,7 @@ from viraxis.domain.models.office import Office
 from viraxis.domain.models.raw_video import RawVideo, RawVideoStatus
 from viraxis.domain.models.user import User
 from viraxis.infrastructure.repositories.raw_video import RawVideoRepository
+from viraxis.infrastructure.upload_analyzer import analyze_uploaded_video
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +117,7 @@ class RawVideoResponse(BaseModel):
     title: Optional[str]
     description: Optional[str]
     tags: list
+    ai_analysis: Optional[dict]
     created_at: str
     updated_at: str
 
@@ -134,6 +136,7 @@ class RawVideoResponse(BaseModel):
             title=v.title,
             description=v.description,
             tags=v.tags or [],
+            ai_analysis=v.ai_analysis,
             created_at=v.created_at.isoformat(),
             updated_at=v.updated_at.isoformat(),
         )
@@ -143,6 +146,7 @@ class RawVideoResponse(BaseModel):
 
 @router.post("/upload", response_model=RawVideoResponse, status_code=status.HTTP_201_CREATED)
 async def upload_video(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     office_id: str = Form(...),
     title: Optional[str] = Form(None),
@@ -151,8 +155,9 @@ async def upload_video(
     session: AsyncSession = Depends(get_session),
 ):
     """
-    Recebe vídeo via multipart, faz upload para o Supabase Storage
-    e registra metadados no banco. Retorna o vídeo criado.
+    Recebe vídeo via multipart, faz upload para o Supabase Storage,
+    registra metadados no banco e dispara análise automática de IA em background.
+    Retorna o vídeo criado (status=processing enquanto a IA analisa, depois ready).
     """
     if not _supabase_configured():
         raise HTTPException(
@@ -201,12 +206,17 @@ async def upload_video(
         file_size_bytes=file_size,
         duration_seconds=None,
         mime_type=mime_type,
-        status=RawVideoStatus.ready,
+        status=RawVideoStatus.processing,
         title=title,
         description=description,
         tags=[],
     )
     await session.commit()
+
+    # Disparar análise de IA em background (não bloqueia a resposta ao usuário)
+    if signed:
+        background_tasks.add_task(analyze_uploaded_video, str(video.id), signed)
+
     return RawVideoResponse.from_model(video, signed_url=signed)
 
 

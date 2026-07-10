@@ -108,6 +108,7 @@ async def run_brain(
                 duration_seconds=v.duration_seconds,
                 tags=v.tags or [],
                 description=v.description,
+                ai_analysis=v.ai_analysis,
             )
             for v in ready_videos
         ]
@@ -151,6 +152,7 @@ async def run_brain(
                 duration_seconds=ref_video.duration_seconds,
                 tags=ref_video.tags or [],
                 description=ref_video.description,
+                ai_analysis=ref_video.ai_analysis,
             )
             logger.info(
                 "BRAIN modo 'com referência' | office=%s | video=%s (%s)",

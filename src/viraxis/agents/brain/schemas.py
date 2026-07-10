@@ -18,6 +18,7 @@ class RawVideoContext(BaseModel):
     duration_seconds: float | None = None
     tags: list[str] = []
     description: str | None = None
+    ai_analysis: dict | None = None  # análise completa gerada pelo upload_analyzer
 
 
 class BrainDecisionInput(BaseModel):

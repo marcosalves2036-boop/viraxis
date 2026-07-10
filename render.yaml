@@ -39,3 +39,5 @@ services:
         sync: false
       - key: CLOUDFLARE_API_TOKEN
         sync: false
+      - key: GOOGLE_API_KEY
+        sync: false  # Gemini 1.5 Flash — análise visual de vídeos no upload_analyzer

@@ -74,6 +74,16 @@ class RawVideo(BaseModelMixin, Base):
         comment="Tags livres para categorizar o vídeo.",
     )
 
+    # Análise automática gerada pelo upload_analyzer após upload
+    ai_analysis: Mapped[dict | None] = mapped_column(
+        JSONB, nullable=True, default=None,
+        comment=(
+            "Análise IA: transcrição Whisper com timestamps, análise visual "
+            "cena-a-cena com timestamps início-fim via Gemini 1.5 Flash, "
+            "metadados técnicos, destaques editoriais."
+        ),
+    )
+
     # Relationships
     office: Mapped["Office"] = relationship(  # type: ignore[name-defined]  # noqa: F821
         "Office", back_populates="raw_videos", lazy="raise"

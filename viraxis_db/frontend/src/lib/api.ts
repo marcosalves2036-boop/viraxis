@@ -88,6 +88,8 @@ export const offices = {
   create: (body: CreateOfficeBody) => req<OfficeResponse>('POST', '/offices', body),
   runBrain: (id: string, temperature?: number) =>
     req<BrainRunResponse>('POST', `/offices/${id}/brain/run`, temperature ? { temperature } : {}),
+  runBrainWithVideo: (id: string, rawVideoId: string) =>
+    req<BrainRunResponse>('POST', `/offices/${id}/brain/run`, { raw_video_id: rawVideoId }),
   analyzeUrl: (id: string, url: string) =>
     req<TrendResponse>('POST', `/offices/${id}/trends/analyze`, { url }),
   listDecisions: (id: string) =>

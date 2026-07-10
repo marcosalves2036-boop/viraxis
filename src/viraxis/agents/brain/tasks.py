@@ -38,13 +38,11 @@ def create_decision_task(
             transcription = (ai.get("transcription_text") or "")[:600]
             highlights = ai.get("editorial_highlights", [])
             scenes = ai.get("scenes", [])
-            hl_lines = "
-".join(
+            hl_lines = "\n".join(
                 f"  - {h.get('start',0):.0f}s–{h.get('end',0):.0f}s: {h.get('reason','')}"
                 for h in highlights[:5]
             )
-            scene_lines = "
-".join(
+            scene_lines = "\n".join(
                 f"  - [{s.get('start',0):.0f}s–{s.get('end',0):.0f}s] {s.get('description','')[:120]}"
                 for s in scenes[:8]
             )
@@ -66,9 +64,7 @@ DESTAQUES EDITORIAIS (momentos de maior impacto — USE para definir o hook e co
 =======================================================
 """
         else:
-            ai_block = "
-(Análise de IA não disponível — baseie-se nos metadados do vídeo.)
-"
+            ai_block = "\n(Análise de IA não disponível — baseie-se nos metadados do vídeo.)\n"
 
         description = f"""
 Você recebeu um vídeo bruto que SERÁ editado e publicado. Ele já foi escolhido

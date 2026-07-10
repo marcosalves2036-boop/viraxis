@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 # ── Configurações ─────────────────────────────────────────────────────────────
 
-_GEMINI_MODEL = "gemini-1.5-flash"
+_GEMINI_MODEL = "gemini-2.5-flash"  # 1.5 foi aposentado para projetos novos (2025)
 _GEMINI_TIMEOUT = 300.0        # vídeos longos levam tempo
 _WHISPER_MODEL = "whisper-large-v3"
 _WHISPER_TIMEOUT = 180.0
@@ -273,9 +273,10 @@ async def _analyze_video_with_gemini(video_path: str, duration: float) -> dict:
         return {}
 
     try:
-        import google.generativeai as genai  # já instalado via crewai[google-genai]
+        from google import genai  # google-genai (SDK novo) — instalado via crewai[google-genai]
+        from google.genai import types as genai_types
 
-        genai.configure(api_key=api_key)
+        client = genai.Client(api_key=api_key)
 
         file_size = Path(video_path).stat().st_size
         if file_size > _MAX_VIDEO_BYTES:
@@ -291,17 +292,22 @@ async def _analyze_video_with_gemini(video_path: str, duration: float) -> dict:
         logger.info("Fazendo upload do vídeo para Gemini File API (%dMB)...", file_size // 1024 // 1024)
 
         video_file = await asyncio.to_thread(
-            genai.upload_file,
-            path=video_path,
-            display_name=f"viraxis_analysis_{Path(video_path).stem}",
+            client.files.upload,
+            file=video_path,
+            config=genai_types.UploadFileConfig(
+                display_name=f"viraxis_analysis_{Path(video_path).stem}",
+                # arquivo temporário não tem extensão — mime explícito obrigatório
+                mime_type="video/mp4",
+            ),
         )
 
         # Aguardar processamento pelo Gemini
         for attempt in range(30):  # até 5min
-            video_file = await asyncio.to_thread(genai.get_file, video_file.name)
-            if video_file.state.name == "ACTIVE":
+            video_file = await asyncio.to_thread(client.files.get, name=video_file.name)
+            state = getattr(video_file.state, "name", str(video_file.state))
+            if state == "ACTIVE":
                 break
-            if video_file.state.name == "FAILED":
+            if state == "FAILED":
                 logger.warning("Gemini File API: processamento falhou")
                 return {}
             await asyncio.sleep(10)
@@ -311,19 +317,16 @@ async def _analyze_video_with_gemini(video_path: str, duration: float) -> dict:
 
         logger.info("Vídeo ativo no Gemini — iniciando análise de cenas...")
 
-        model = genai.GenerativeModel(
-            model_name=_GEMINI_MODEL,
-            system_instruction=_GEMINI_SYSTEM,
-        )
-
         response = await asyncio.to_thread(
-            model.generate_content,
-            [video_file, _GEMINI_PROMPT],
-            generation_config=genai.GenerationConfig(
+            client.models.generate_content,
+            model=_GEMINI_MODEL,
+            contents=[video_file, _GEMINI_PROMPT],
+            config=genai_types.GenerateContentConfig(
+                system_instruction=_GEMINI_SYSTEM,
                 temperature=0.2,         # baixo para análise factual precisa
                 max_output_tokens=8192,
+                http_options=genai_types.HttpOptions(timeout=int(_GEMINI_TIMEOUT * 1000)),
             ),
-            request_options={"timeout": _GEMINI_TIMEOUT},
         )
 
         raw = response.text.strip()
@@ -348,7 +351,7 @@ async def _analyze_video_with_gemini(video_path: str, duration: float) -> dict:
 
         # Limpar arquivo do Gemini após uso
         try:
-            await asyncio.to_thread(genai.delete_file, video_file.name)
+            await asyncio.to_thread(client.files.delete, name=video_file.name)
         except Exception:
             pass
 
@@ -421,12 +424,14 @@ async def analyze_uploaded_video(video_id: str, signed_url: str) -> None:
             # 4. Análise visual (Gemini) e Transcrição (Whisper) em paralelo
             audio_ok = await _extract_audio_for_whisper(video_path, audio_path)
 
+            async def _sem_audio() -> dict:
+                return {"text": "", "segments": []}
+
             gemini_task = asyncio.create_task(
                 _analyze_video_with_gemini(video_path, duration)
             )
             whisper_task = asyncio.create_task(
-                _transcribe_with_whisper(audio_path) if audio_ok
-                else asyncio.coroutine(lambda: {"text": "", "segments": []})()
+                _transcribe_with_whisper(audio_path) if audio_ok else _sem_audio()
             )
 
             gemini_analysis, transcription = await asyncio.gather(

@@ -176,9 +176,16 @@ async def upload_video(
     if not office:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Escritório não encontrado.")
 
-    # Ler arquivo em memória
+    # Ler arquivo em memória — APENAS para arquivos pequenos.
+    # Vídeos grandes devem usar o fluxo /upload-url (upload direto browser→Supabase).
+    MAX_DIRECT_UPLOAD_BYTES = 50 * 1024 * 1024
     data = await file.read()
     file_size = len(data)
+    if file_size > MAX_DIRECT_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail="Arquivo acima de 50MB. Use o fluxo de upload direto (/raw-videos/upload-url).",
+        )
 
     # Inferir mime_type
     mime_type = file.content_type or mimetypes.guess_type(file.filename or "")[0] or "video/mp4"
@@ -216,6 +223,150 @@ async def upload_video(
     # Disparar análise de IA em background (não bloqueia a resposta ao usuário)
     if signed:
         background_tasks.add_task(analyze_uploaded_video, str(video.id), signed)
+
+    return RawVideoResponse.from_model(video, signed_url=signed)
+
+
+async def _probe_duration(url: str) -> Optional[float]:
+    """Extrai a duração do vídeo via ffprobe (binário estático do build)."""
+    import asyncio
+    import json as _json
+    import os
+    import shutil
+    import subprocess
+
+    probe_bin = os.environ.get("FFPROBE_BIN") or shutil.which("ffprobe") or "ffprobe"
+    try:
+        proc = await asyncio.to_thread(
+            subprocess.run,
+            [probe_bin, "-v", "quiet", "-print_format", "json", "-show_format", url],
+            capture_output=True,
+            timeout=90,
+        )
+        data = _json.loads(proc.stdout or b"{}")
+        duration = float((data.get("format") or {}).get("duration") or 0)
+        return duration if duration > 0 else None
+    except Exception as e:
+        logger.warning("ffprobe falhou (duração ficará vazia): %s", e)
+        return None
+
+
+class UploadUrlRequest(BaseModel):
+    office_id: str
+    filename: str
+    mime_type: Optional[str] = None
+    file_size_bytes: Optional[int] = None
+
+
+class UploadUrlResponse(BaseModel):
+    video_id: str
+    upload_url: str
+    storage_path: str
+
+
+@router.post("/upload-url", response_model=UploadUrlResponse, status_code=status.HTTP_201_CREATED)
+async def create_upload_url(
+    body: UploadUrlRequest,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Gera signed upload URL para o browser enviar o vídeo DIRETO ao Supabase.
+
+    Evita passar o arquivo pelo Render (vídeos grandes derrubavam o serviço).
+    Fluxo: upload-url → PUT do arquivo na URL → confirm-upload.
+    """
+    if not _supabase_configured():
+        raise HTTPException(status_code=503, detail="Armazenamento não configurado.")
+
+    result = await session.execute(
+        sa_select(Office).where(
+            Office.id == UUID(body.office_id),
+            Office.user_id == current_user.id,
+        )
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Escritório não encontrado.")
+
+    mime_type = body.mime_type or mimetypes.guess_type(body.filename)[0] or "video/mp4"
+    ext = mimetypes.guess_extension(mime_type) or ".mp4"
+    if ext == ".mp4v":
+        ext = ".mp4"
+    storage_path = f"{current_user.id}/{body.office_id}/{uuid.uuid4()}{ext}"
+
+    import httpx
+    sign_url = f"{_storage_base()}/object/upload/sign/{SUPABASE_BUCKET}/{storage_path}"
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.post(sign_url, headers=_storage_headers(), json={})
+        if resp.status_code != 200:
+            logger.error("Supabase signed upload URL error: %s %s", resp.status_code, resp.text)
+            raise HTTPException(status_code=500, detail="Erro ao gerar URL de upload.")
+        rel_url = resp.json().get("url", "")
+    if not rel_url:
+        raise HTTPException(status_code=500, detail="Supabase não retornou URL de upload.")
+    upload_url = rel_url if rel_url.startswith("http") else f"{_storage_base()}{rel_url}"
+
+    repo = RawVideoRepository(session)
+    video = await repo.create(
+        office_id=UUID(body.office_id),
+        user_id=current_user.id,
+        original_filename=body.filename,
+        r2_key=storage_path,
+        r2_url=None,
+        file_size_bytes=body.file_size_bytes,
+        duration_seconds=None,
+        mime_type=mime_type,
+        status=RawVideoStatus.processing,
+        title=None,
+        description=None,
+        tags=[],
+    )
+    await session.commit()
+
+    return UploadUrlResponse(
+        video_id=str(video.id),
+        upload_url=upload_url,
+        storage_path=storage_path,
+    )
+
+
+class ConfirmUploadRequest(BaseModel):
+    file_size_bytes: Optional[int] = None
+
+
+@router.post("/{video_id}/confirm-upload", response_model=RawVideoResponse)
+async def confirm_upload(
+    video_id: UUID,
+    body: ConfirmUploadRequest,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Confirma que o browser terminou o upload direto ao Supabase.
+
+    Extrai a duração via ffprobe, gera signed URL 24h e dispara a análise
+    de IA em background.
+    """
+    video = await session.get(RawVideo, video_id)
+    if not video or video.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Vídeo não encontrado.")
+
+    if body.file_size_bytes:
+        video.file_size_bytes = body.file_size_bytes
+
+    signed = await _signed_url(video.r2_key)
+    if not signed:
+        raise HTTPException(status_code=500, detail="Erro ao gerar signed URL do vídeo.")
+
+    duration = await _probe_duration(signed)
+    if duration:
+        video.duration_seconds = duration
+
+    video.r2_url = signed
+    session.add(video)
+    await session.commit()
+    await session.refresh(video)
+
+    background_tasks.add_task(analyze_uploaded_video, str(video.id), signed)
 
     return RawVideoResponse.from_model(video, signed_url=signed)
 

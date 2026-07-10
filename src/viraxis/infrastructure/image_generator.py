@@ -1,9 +1,11 @@
 """Image Generator — uma imagem por cena, com múltiplos provedores.
 
-Ordem de provedores (fallback automático):
-  1. Together AI — FLUX.1 [schnell] (grátis) — usado se ``TOGETHER_API_KEY``
-     estiver no ambiente. Confiável e mantém o "look" FLUX.
-  2. Pollinations.ai (FLUX) — público, sem key. Fica como fallback (instável).
+Ordem de provedores (fallback automático, na ordem de disponibilidade de key):
+  1. Cloudflare Workers AI — FLUX.1 [schnell] (grátis, sem cartão). Usado se
+     ``CLOUDFLARE_ACCOUNT_ID`` + ``CLOUDFLARE_API_TOKEN`` estiverem no ambiente.
+  2. Together AI — FLUX.1 [schnell]. Usado se ``TOGETHER_API_KEY`` existir.
+     (Obs: a Together passou a exigir depósito p/ liberar a API.)
+  3. Pollinations.ai (FLUX) — público, sem key. Fallback (instável).
 
 Fluxo por cena:
   1. LLM (litellm/Groq, mesmo provider do RENDERER) traduz/otimiza a
@@ -13,8 +15,9 @@ Fluxo por cena:
      usa fundo sólido da marca para aquela cena (não derruba o vídeo).
 
 Config por ambiente:
-  - ``TOGETHER_API_KEY``     → habilita o Together como provedor primário.
-  - ``POLLINATIONS_API_KEY`` → opcional (bearer) para o Pollinations.
+  - ``CLOUDFLARE_ACCOUNT_ID`` + ``CLOUDFLARE_API_TOKEN`` → Cloudflare (primário).
+  - ``TOGETHER_API_KEY``      → Together.
+  - ``POLLINATIONS_API_KEY``  → opcional (bearer) para o Pollinations.
 """
 
 from __future__ import annotations
@@ -31,19 +34,25 @@ from viraxis.config import get_settings
 
 logger = logging.getLogger(__name__)
 
+# ── Cloudflare Workers AI (FLUX.1 schnell — grátis) ──────────────────────────────
+_CF_MODEL = "@cf/black-forest-labs/flux-1-schnell"
+_CF_TIMEOUT = 60.0
+_CF_ATTEMPTS = 2
+_CF_STEPS = 4  # schnell: 1–8
+
+# ── Together AI (FLUX.1 schnell) ─────────────────────────────────────────────────
+_TOGETHER_URL = "https://api.together.xyz/v1/images/generations"
+_TOGETHER_MODEL = "black-forest-labs/FLUX.1-schnell-Free"
+_TOGETHER_TIMEOUT = 60.0
+_TOGETHER_ATTEMPTS = 2
+_TOGETHER_MAX_DIM = 1440
+_TOGETHER_STEPS = 4
+
 # ── Pollinations ─────────────────────────────────────────────────────────────────
 _POLLINATIONS_BASE = "https://image.pollinations.ai/prompt/"
 _POLLINATIONS_TIMEOUT = 30.0
 _POLLINATIONS_ATTEMPTS = 3
 _POLLINATIONS_MODEL = "flux"
-
-# ── Together AI (FLUX.1 schnell — grátis) ────────────────────────────────────────
-_TOGETHER_URL = "https://api.together.xyz/v1/images/generations"
-_TOGETHER_MODEL = "black-forest-labs/FLUX.1-schnell-Free"
-_TOGETHER_TIMEOUT = 60.0
-_TOGETHER_ATTEMPTS = 2
-_TOGETHER_MAX_DIM = 1440   # limite do tier free; escalamos mantendo o 9:16
-_TOGETHER_STEPS = 4        # schnell: 1–4
 
 _PROMPT_MAX_CHARS = 1200
 _IMAGE_SIGNATURES = (b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff", b"RIFF")
@@ -108,8 +117,47 @@ def _looks_like_image(content: bytes, content_type: str = "") -> bool:
     return content.startswith(_IMAGE_SIGNATURES)
 
 
+# ── Provedor: Cloudflare Workers AI ──────────────────────────────────────────────
+
+async def _generate_cloudflare(full_prompt: str, width: int, height: int, seed: int | None) -> bytes:
+    account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
+    token = os.environ.get("CLOUDFLARE_API_TOKEN", "").strip()
+    if not (account_id and token):
+        raise ImageGenerationError("CLOUDFLARE_ACCOUNT_ID/CLOUDFLARE_API_TOKEN ausentes")
+
+    url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{_CF_MODEL}"
+    payload: dict = {"prompt": full_prompt, "steps": _CF_STEPS}
+    if seed is not None:
+        payload["seed"] = int(seed) % 2_147_483_647
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    last_error: object = None
+    for attempt in range(1, _CF_ATTEMPTS + 1):
+        try:
+            async with httpx.AsyncClient(timeout=_CF_TIMEOUT) as client:
+                resp = await client.post(url, json=payload, headers=headers)
+            if resp.status_code == 200:
+                body = resp.json() or {}
+                b64 = (body.get("result") or {}).get("image")
+                if b64:
+                    raw = base64.b64decode(b64)
+                    if _looks_like_image(raw):
+                        logger.info("image_generator[cloudflare] OK | tentativa=%d | bytes=%d", attempt, len(raw))
+                        return raw
+                last_error = f"sem imagem no corpo (success={body.get('success')}, errors={body.get('errors')})"
+            else:
+                last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
+        except Exception as e:  # noqa: BLE001
+            last_error = e
+        logger.warning("image_generator[cloudflare] tentativa %d/%d falhou: %s", attempt, _CF_ATTEMPTS, last_error)
+        if attempt < _CF_ATTEMPTS:
+            await asyncio.sleep(2 * attempt)
+    raise ImageGenerationError(f"Cloudflare falhou: {last_error}")
+
+
+# ── Provedor: Together AI ────────────────────────────────────────────────────────
+
 def _clamp_together_dims(width: int, height: int) -> tuple[int, int]:
-    """Escala p/ caber no limite do Together mantendo o 9:16, múltiplos de 16."""
     scale = min(1.0, _TOGETHER_MAX_DIM / max(width, height))
 
     def _round16(v: float) -> int:
@@ -117,8 +165,6 @@ def _clamp_together_dims(width: int, height: int) -> tuple[int, int]:
 
     return _round16(width), _round16(height)
 
-
-# ── Provedor: Together AI ────────────────────────────────────────────────────────
 
 async def _generate_together(full_prompt: str, width: int, height: int, seed: int | None) -> bytes:
     api_key = os.environ.get("TOGETHER_API_KEY", "").strip()
@@ -206,8 +252,10 @@ async def _generate_pollinations(full_prompt: str, width: int, height: int, seed
 # ── API pública ──────────────────────────────────────────────────────────────────
 
 def _provider_chain():
-    """Ordem dos provedores conforme as keys disponíveis."""
+    """Ordem dos provedores conforme as keys disponíveis (Pollinations sempre por último)."""
     chain = []
+    if os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip() and os.environ.get("CLOUDFLARE_API_TOKEN", "").strip():
+        chain.append(("cloudflare", _generate_cloudflare))
     if os.environ.get("TOGETHER_API_KEY", "").strip():
         chain.append(("together", _generate_together))
     chain.append(("pollinations", _generate_pollinations))
@@ -223,8 +271,8 @@ async def generate_scene_image(
 ) -> bytes:
     """Gera 1 imagem para a cena e retorna os bytes.
 
-    Tenta os provedores em ordem (Together → Pollinations). Se ``seed`` for dado,
-    as imagens ficam variadas por cena e reproduzíveis.
+    Tenta os provedores em ordem (Cloudflare → Together → Pollinations). Se
+    ``seed`` for dado, as imagens ficam variadas por cena e reproduzíveis.
 
     Raises:
         ImageGenerationError: se todos os provedores falharem.

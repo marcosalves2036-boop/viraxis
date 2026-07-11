@@ -47,6 +47,8 @@ class BrainDecisionInput(BaseModel):
         ),
     )
 
+    focus_hint: str = Field(default="", description="Contexto adicional de foco injetado no prompt (ex: trecho específico do vídeo).")
+
     # v2: multiplicadores sazonais das tendências recentes
     seasonal_multipliers: list[float] = Field(
         default_factory=list,
@@ -62,6 +64,7 @@ class BrainDecisionInput(BaseModel):
         profile: NicheProfile,
         raw_videos: list[RawVideoContext] | None = None,
         reference_video: RawVideoContext | None = None,
+        focus_hint: str = "",
     ) -> "BrainDecisionInput":
         """Constrói o input a partir de um NicheProfile ORM."""
         return cls(
@@ -74,6 +77,7 @@ class BrainDecisionInput(BaseModel):
             raw_notes=profile.raw_notes,
             available_raw_videos=raw_videos or [],
             reference_video=reference_video,
+            focus_hint=focus_hint,
         )
 
     def to_context_string(self) -> str:

@@ -66,6 +66,7 @@ DESTAQUES EDITORIAIS (momentos de maior impacto — USE para definir o hook e co
         else:
             ai_block = "\n(Análise de IA não disponível — baseie-se nos metadados do vídeo.)\n"
 
+        focus_block = f"\n\n{niche_input.focus_hint}" if niche_input.focus_hint else ""
         description = f"""
 Você recebeu um vídeo bruto que SERÁ editado e publicado. Ele já foi escolhido
 pelo operador — sua tarefa NÃO é escolher um tema novo, e sim decidir a
@@ -105,6 +106,7 @@ INSTRUÇÕES:
    - 0.7-0.9: bom fit, alguma incerteza
    - 0.5-0.7: fit exploratório
    - <0.5: vídeo com baixo potencial no nicho (sinalize no reasoning)
+{focus_block}
 """.strip()
         expected_output = (
             "Um objeto JSON válido seguindo exatamente o schema BrainDecisionOutput, "

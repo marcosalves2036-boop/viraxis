@@ -66,6 +66,7 @@ async def run_brain(
     *,
     temperature: float | None = None,
     raw_video_id: UUID | None = None,
+    focus_hint: str = "",
 ) -> ContentDecision:
     """
     Ponto de entrada principal do BRAIN.
@@ -170,6 +171,7 @@ async def run_brain(
             niche,
             raw_videos=raw_video_contexts,
             reference_video=reference_video_ctx,
+            focus_hint=focus_hint,
         )
         niche_input.seasonal_multipliers = seasonal_multipliers
         logger.info(

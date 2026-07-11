@@ -13,6 +13,7 @@ interface AiAnalysis {
   predominant_tone?: string;
   transcription_text?: string;
   scenes?: Array<{ start: number; end: number; description: string }>;
+  editorial_highlights?: Array<{ start: number; end: number; reason: string }>;
 }
 
 interface RawVideo {
@@ -62,6 +63,10 @@ function VideoModal({
   const [loadingGen, setLoadingGen] = useState(true);
   const [brainRunning, setBrainRunning] = useState(false);
   const [brainMsg, setBrainMsg] = useState<string | null>(null);
+  const [showBrainModal, setShowBrainModal] = useState(false);
+  const [nVideos, setNVideos] = useState(0);
+  const [batchLoading, setBatchLoading] = useState(false);
+  const [batchResult, setBatchResult] = useState<number | null>(null);
 
   const token = typeof window !== "undefined" ? localStorage.getItem("viraxis_token") : null;
 
@@ -104,6 +109,30 @@ function VideoModal({
     } catch (e) {
       setBrainMsg(`❌ ${e instanceof Error ? e.message : "Erro ao rodar BRAIN"}`);
     } finally { setBrainRunning(false); }
+  }
+
+  async function handleBatchBrain() {
+    if (!video || !officeId) return;
+    setBatchLoading(true);
+    setBatchResult(null);
+    try {
+      const res = await fetch("/api/brain/batch-run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          office_id: officeId,
+          raw_video_id: video.id,
+          n_videos: nVideos,
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      setBatchResult(data.total);
+    } catch (err) {
+      console.error("batch-brain error:", err);
+    } finally {
+      setBatchLoading(false);
+    }
   }
 
   return (
@@ -200,7 +229,18 @@ function VideoModal({
             className="px-3 py-2 bg-white/[0.06] hover:bg-white/10 border border-white/10 text-white/60 rounded-xl text-xs transition-colors">
             ✏️ Editar metadados
           </button>
-          <button onClick={handleUseBrain} disabled={brainRunning || video.status !== "ready"}
+          <button
+            onClick={() => {
+              const highlights = video?.ai_analysis?.editorial_highlights ?? [];
+              if (highlights.length >= 2) {
+                setNVideos(0);
+                setBatchResult(null);
+                setShowBrainModal(true);
+              } else {
+                handleUseBrain();
+              }
+            }}
+            disabled={brainRunning || video.status !== "ready"}
             className="px-3 py-2 bg-violet-600 hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl text-xs font-semibold transition-colors">
             {brainRunning ? "⚙️ Rodando BRAIN…" : "🧠 Usar no BRAIN"}
           </button>
@@ -209,6 +249,62 @@ function VideoModal({
             🗑 Excluir
           </button>
         </div>
+
+        {showBrainModal && (() => {
+          const highlights = video.ai_analysis?.editorial_highlights ?? [];
+          return (
+            <div className="fixed inset-0 z-[60] bg-black/70 flex items-center justify-center p-4">
+              <div className="bg-[#0f0f17] border border-white/10 rounded-2xl p-6 w-full max-w-md space-y-5">
+                <h3 className="text-white font-semibold">🤖 Quantos vídeos gerar?</h3>
+                <div className="space-y-2">
+                  {[
+                    { label: `Auto — ${Math.min(highlights.length, 5)} destaques detectados`, value: 0 },
+                    { label: "1 vídeo", value: 1 },
+                    { label: "2 vídeos", value: 2 },
+                    { label: "3 vídeos", value: 3 },
+                  ].map(opt => (
+                    <label key={opt.value} className="flex items-center gap-3 p-3 rounded-xl bg-white/[0.04] cursor-pointer hover:bg-white/[0.07]">
+                      <input type="radio" name="n_videos" value={opt.value}
+                        checked={nVideos === opt.value}
+                        onChange={() => setNVideos(opt.value)}
+                        className="accent-violet-500" />
+                      <span className="text-white/80 text-sm">{opt.label}</span>
+                    </label>
+                  ))}
+                </div>
+                {highlights.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-xs text-white/40 uppercase tracking-wider">Destaques detectados</p>
+                    {highlights.slice(0, 5).map((hl: {start: number; end: number; reason: string}, i: number) => (
+                      <div key={i} className="flex gap-2 text-xs bg-white/[0.03] rounded-lg p-2">
+                        <span className="text-violet-400 font-mono shrink-0">
+                          {Math.floor(hl.start/60)}:{String(Math.floor(hl.start%60)).padStart(2,"0")}–
+                          {Math.floor(hl.end/60)}:{String(Math.floor(hl.end%60)).padStart(2,"0")}
+                        </span>
+                        <span className="text-white/60">{hl.reason}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {batchResult !== null && (
+                  <p className="text-center text-xs text-emerald-400">
+                    ✅ {batchResult} decisões criadas — acesse Gerenciar Escritório para aprovar.
+                  </p>
+                )}
+                <div className="flex gap-3 pt-2">
+                  <button onClick={() => setShowBrainModal(false)}
+                    className="flex-1 py-2.5 rounded-xl border border-white/10 text-white/50 text-sm hover:bg-white/[0.04]">
+                    Cancelar
+                  </button>
+                  <button onClick={handleBatchBrain} disabled={batchLoading}
+                    className="flex-1 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium disabled:opacity-50">
+                    {batchLoading ? "Gerando..." : "Gerar com o BRAIN →"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
       </div>
     </div>
   );

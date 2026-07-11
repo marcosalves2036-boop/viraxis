@@ -4,6 +4,15 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { auth, content } from "@/lib/api";
 
+function toText(val: unknown): string {
+  if (!val) return "";
+  if (typeof val === "string") return val;
+  if (typeof val === "object") {
+    const o = val as Record<string, unknown>;
+    return String(o.narracao ?? o["narração"] ?? o.content ?? Object.values(o).join(" "));
+  }
+  return String(val);
+}
 
 interface CorteEdicao { inicio?: number; fim?: number; tipo: string; descricao: string; prioridade?: string }
 interface TextoTela { inicio?: number; fim?: number; texto: string }
@@ -118,7 +127,6 @@ export default function ContentDetailPage() {
     setGenerating(true);
     setGenError(null);
     try {
-      // Se ainda está em review, aprovar o roteiro antes de gerar
       if (item!.status === "review") {
         const ar = await fetch(`/api/offices/${officeId}/content/${item!.id}/approve`, {
           method: "PATCH",
@@ -126,16 +134,9 @@ export default function ContentDetailPage() {
         });
         if (!ar.ok) throw new Error("Falha ao aprovar o roteiro");
       }
-      const r = await content.processVideo(officeId, item!.id);
-      if (r.status === "ready" && r.video_url) {
-        // modo síncrono (editing_plan): já pronto
-        setVideoUrl(r.video_url);
-        setItem(prev => prev ? { ...prev, status: "ready" } : prev);
-      } else {
-        // modo 100% IA (assíncrono): acompanha via polling até concluir
-        setItem(prev => prev ? { ...prev, status: "rendering" } : prev);
-        await pollDetailUntilDone(officeId, item!.id);
-      }
+      await content.processVideo(officeId, item!.id);
+      setItem(prev => prev ? { ...prev, status: "rendering" } : prev);
+      await pollDetailUntilDone(officeId, item!.id);
     } catch (e) {
       setGenError(e instanceof Error ? e.message : "Erro ao gerar vídeo");
     } finally {
@@ -224,6 +225,32 @@ export default function ContentDetailPage() {
         </div>
       )}
 
+      {/* Rendering progress bar */}
+      {item.status === "rendering" && (
+        <div className="card-glass rounded-2xl p-5 space-y-3">
+          <p className="text-sm text-white/60 font-medium">
+            {meta.mode === "editing_plan" ? "✂️ Editando vídeo..." : "🤖 Gerando vídeo..."}
+          </p>
+          <div className="space-y-1.5">
+            <div className="flex justify-between text-xs text-white/40">
+              <span>{meta.render_stage || "processando..."}</span>
+              <span>{meta.render_progress ?? 0}%</span>
+            </div>
+            <div className="h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-violet-500 to-cyan-400 transition-all duration-700"
+                style={{ width: `${meta.render_progress ?? 5}%` }}
+              />
+            </div>
+          </div>
+          <p className="text-xs text-white/30 text-center">
+            {meta.mode === "editing_plan"
+              ? "FFmpeg está cortando os trechos. Leva de 30s a alguns minutos."
+              : "Isso leva 2–5 minutos. Pode fechar esta aba."}
+          </p>
+        </div>
+      )}
+
       {/* Tabs */}
       <div className="card-glass rounded-2xl overflow-hidden">
         <div className="flex border-b border-white/[0.06] overflow-x-auto">
@@ -296,7 +323,7 @@ export default function ContentDetailPage() {
                 <>
                   <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-4">
                     <p className="text-xs font-semibold text-yellow-400 uppercase tracking-wider mb-2">🎣 Hook</p>
-                    <p className="text-white/75 text-sm leading-relaxed">{meta.roteiro.hook}</p>
+                    <p className="text-white/75 text-sm leading-relaxed">{toText(meta.roteiro.hook)}</p>
                   </div>
                   <div>
                     <p className="text-xs font-semibold text-white/40 uppercase tracking-wider mb-2">🎬 Desenvolvimento</p>
@@ -304,18 +331,18 @@ export default function ContentDetailPage() {
                       {meta.roteiro.desenvolvimento.map((cena, i) => (
                         <div key={i} className="flex gap-3 bg-white/[0.03] rounded-xl p-3">
                           <span className="text-violet-400 font-bold text-sm shrink-0">{i+1}</span>
-                          <p className="text-white/65 text-sm leading-relaxed">{cena}</p>
+                          <p className="text-white/65 text-sm leading-relaxed">{toText(cena)}</p>
                         </div>
                       ))}
                     </div>
                   </div>
                   <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-4">
                     <p className="text-xs font-semibold text-emerald-400 uppercase tracking-wider mb-2">⚡ Clímax</p>
-                    <p className="text-white/75 text-sm leading-relaxed">{meta.roteiro.climax}</p>
+                    <p className="text-white/75 text-sm leading-relaxed">{toText(meta.roteiro.climax)}</p>
                   </div>
                   <div className="bg-violet-500/10 border border-violet-500/20 rounded-xl p-4">
                     <p className="text-xs font-semibold text-violet-400 uppercase tracking-wider mb-2">📣 CTA</p>
-                    <p className="text-white/75 text-sm leading-relaxed">{meta.roteiro.cta}</p>
+                    <p className="text-white/75 text-sm leading-relaxed">{toText(meta.roteiro.cta)}</p>
                   </div>
                 </>
               ) : (

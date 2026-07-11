@@ -168,11 +168,13 @@ async def apply_editing_plan(
         input_path = tmp / "input.mp4"
         output_path = tmp / "output.mp4"
 
-        # 1. Download do vídeo bruto
-        async with httpx.AsyncClient(timeout=300.0, follow_redirects=True) as client:
-            resp = await client.get(raw_video_url)
-            resp.raise_for_status()
-            input_path.write_bytes(resp.content)
+        # 1. Download do vídeo bruto (streaming — evita carregar tudo em RAM)
+        async with httpx.AsyncClient(timeout=600.0, follow_redirects=True) as client:
+            async with client.stream("GET", raw_video_url) as resp:
+                resp.raise_for_status()
+                with open(input_path, "wb") as f:
+                    async for chunk in resp.aiter_bytes(chunk_size=1024 * 1024):
+                        f.write(chunk)
         logger.info(
             "video_processor: download OK | item=%s | %d bytes | %d segmento(s) keep",
             item_id, input_path.stat().st_size, len(keep_segments),

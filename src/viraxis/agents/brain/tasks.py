@@ -143,6 +143,9 @@ INSTRUÇÕES:
    - 0.7-0.9: boa evidência, alguma incerteza
    - 0.5-0.7: dados limitados, decisão exploratória
    - <0.5: dados insuficientes (sinalize no reasoning)
+
+6. MODO IA PURA: crie um tema NOVO do zero. NÃO referencie vídeos da biblioteca:
+   raw_video_id deve ficar null e o título NÃO deve usar o prefixo '[video:...]'.
 """.strip()
         expected_output = (
             "Um objeto JSON válido seguindo exatamente o schema BrainDecisionOutput, "

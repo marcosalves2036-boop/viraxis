@@ -99,25 +99,30 @@ async def run_brain(
         )
 
         # ---- v2: Buscar vídeos brutos disponíveis ----
-        raw_video_repo = RawVideoRepository(session)
-        ready_videos = await raw_video_repo.get_ready_by_office(office_id)
-        raw_video_contexts = [
-            RawVideoContext(
-                id=str(v.id),
-                title=v.title or v.original_filename,
-                duration_seconds=v.duration_seconds,
-                tags=v.tags or [],
-                description=v.description,
-                ai_analysis=v.ai_analysis,
-            )
-            for v in ready_videos
-        ]
-        if raw_video_contexts:
-            logger.info(
-                "BRAIN v2: %d vídeo(s) bruto(s) disponíveis para office=%s",
-                len(raw_video_contexts),
-                office_id,
-            )
+        # Só no modo "com referência" (raw_video_id presente). No modo "IA pura"
+        # a biblioteca fica FORA do prompt — senão o LLM ancora a decisão em um
+        # vídeo existente em vez de criar tema livre.
+        raw_video_contexts: list[RawVideoContext] = []
+        if raw_video_id is not None:
+            raw_video_repo = RawVideoRepository(session)
+            ready_videos = await raw_video_repo.get_ready_by_office(office_id)
+            raw_video_contexts = [
+                RawVideoContext(
+                    id=str(v.id),
+                    title=v.title or v.original_filename,
+                    duration_seconds=v.duration_seconds,
+                    tags=v.tags or [],
+                    description=v.description,
+                    ai_analysis=v.ai_analysis,
+                )
+                for v in ready_videos
+            ]
+            if raw_video_contexts:
+                logger.info(
+                    "BRAIN v2: %d vídeo(s) bruto(s) disponíveis para office=%s",
+                    len(raw_video_contexts),
+                    office_id,
+                )
 
         # ---- v2: Buscar seasonal_multipliers dos TrendSnapshots recentes ----
         stmt = (

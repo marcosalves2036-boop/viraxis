@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 # ── Configurações ─────────────────────────────────────────────────────────────
 
-_GEMINI_MODEL = "gemini-2.5-flash"  # 1.5 foi aposentado para projetos novos (2025)
+_GEMINI_MODEL = "gemini-flash-latest"  # alias estável — modelos fixos (1.5/2.5) rejeitam contas novas
 _GEMINI_TIMEOUT = 300.0        # vídeos longos levam tempo
 _WHISPER_MODEL = "whisper-large-v3"
 _WHISPER_TIMEOUT = 180.0

@@ -58,16 +58,17 @@ def _storage_headers() -> dict:
     return {"Authorization": f"Bearer {key}", "apikey": key}
 
 
-async def upload_to_storage(data: bytes, dest_path: str, content_type: str = "video/mp4") -> str:
-    """Sobe bytes para o bucket (upsert). Retorna o dest_path."""
+async def upload_to_storage(file_path: Path, dest_path: str, content_type: str = "video/mp4") -> str:
+    """Sobe arquivo para Supabase em streaming — não carrega em RAM."""
     settings = get_settings()
     url = (
         f"{settings.supabase_url}/storage/v1/object/"
         f"{settings.supabase_bucket}/{dest_path}"
     )
     headers = {**_storage_headers(), "Content-Type": content_type, "x-upsert": "true"}
-    async with httpx.AsyncClient(timeout=180.0) as client:
-        resp = await client.post(url, content=data, headers=headers)
+    async with httpx.AsyncClient(timeout=300.0) as client:
+        with open(file_path, "rb") as f:
+            resp = await client.post(url, content=f, headers=headers)
         if resp.status_code not in (200, 201):
             raise RuntimeError(
                 f"Upload Supabase falhou ({resp.status_code}): {resp.text[:300]}"
@@ -210,8 +211,8 @@ async def apply_editing_plan(
                 "-c", "copy", str(output_path),
             ])
 
-        # 3. Upload + signed URL
-        await upload_to_storage(output_path.read_bytes(), dest_path)
+        # 3. Upload + signed URL (streaming — dentro do tmpdir, antes do cleanup)
+        await upload_to_storage(output_path, dest_path)
 
     signed_url = await sign_storage_path(dest_path)
     logger.info("video_processor: concluído | item=%s | path=%s", item_id, dest_path)

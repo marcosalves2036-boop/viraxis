@@ -52,7 +52,7 @@ async def compose_ai_video(
         ])
 
         # 3. Upload + signed URL
-        await upload_to_storage(output_path.read_bytes(), dest_path)
+        await upload_to_storage(output_path, dest_path)
 
     signed_url = await sign_storage_path(dest_path)
     logger.info("video_composer: concluído | item=%s | path=%s", item_id, dest_path)

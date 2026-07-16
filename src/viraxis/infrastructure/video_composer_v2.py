@@ -327,7 +327,7 @@ async def compose_ai_video_v2(
 
         # 7. Upload
         await _emit(progress_cb, 96, "enviando ao storage")
-        await upload_to_storage(final_path.read_bytes(), dest_path)
+        await upload_to_storage(final_path, dest_path)
 
     signed_url = await sign_storage_path(dest_path)
     await _emit(progress_cb, 100, "concluído")

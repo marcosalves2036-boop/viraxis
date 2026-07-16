@@ -314,8 +314,20 @@ async def _merge_item_meta(item_id, patch: dict) -> None:
 
 
 async def _apply_editing_plan_background(item_id: UUID) -> None:
-    """Worker assíncrono: baixa vídeo bruto, aplica cortes FFmpeg, sobe resultado."""
+    """Worker assíncrono: 3 sessões curtas (antes / depois / erro) — nunca mantém DB aberto durante FFmpeg."""
     from viraxis.infrastructure.database.session import AsyncSessionLocal
+    from viraxis.domain.models.raw_video import RawVideo
+    from viraxis.domain.models.content_decision import ContentDecision
+    from viraxis.infrastructure.video_processor import (
+        apply_editing_plan,
+        extract_keep_segments,
+        sign_storage_path,
+    )
+
+    # ── SESSÃO 1: buscar dados e setar progresso inicial ──────────────────────
+    raw_url: str | None = None
+    keep_segments: list = []
+    meta: dict = {}
 
     async with AsyncSessionLocal() as session:
         item = await session.get(ContentItem, item_id)
@@ -323,43 +335,57 @@ async def _apply_editing_plan_background(item_id: UUID) -> None:
             logger.error("editing_plan background: item %s não encontrado", item_id)
             return
 
-        try:
-            from viraxis.domain.models.raw_video import RawVideo
-            from viraxis.domain.models.content_decision import ContentDecision
-            from viraxis.infrastructure.video_processor import (
-                apply_editing_plan,
-                extract_keep_segments,
-                sign_storage_path,
-            )
+        meta = item.production_meta or {}
+        rv_id = meta.get("raw_video_id") or (meta.get("raw_video") or {}).get("id")
+        if not rv_id and item.decision_id:
+            dec = await session.get(ContentDecision, item.decision_id)
+            if dec and dec.raw_video_id:
+                rv_id = str(dec.raw_video_id)
 
-            meta = item.production_meta or {}
-            rv_id = meta.get("raw_video_id") or (meta.get("raw_video") or {}).get("id")
-            if not rv_id and item.decision_id:
-                dec = await session.get(ContentDecision, item.decision_id)
-                if dec and dec.raw_video_id:
-                    rv_id = str(dec.raw_video_id)
-
-            if not rv_id:
-                raise ValueError("raw_video_id não encontrado no production_meta")
-
-            raw_video = await session.get(RawVideo, UUID(str(rv_id)))
-            if not raw_video:
-                raise ValueError(f"RawVideo {rv_id} não encontrado")
-
-            raw_url = await sign_storage_path(raw_video.r2_key, expires_in=86400)
-            keep_segments = extract_keep_segments(meta)
-
-            # Atualizar progresso
-            item.production_meta = {**meta, "render_progress": 20, "render_stage": "baixando vídeo"}
+        if not rv_id:
+            item.status = ContentStatus.failed
+            item.production_meta = {**meta, "render_error": "raw_video_id não encontrado", "render_progress": 0, "render_stage": "falhou"}
             session.add(item)
             await session.commit()
+            return
 
-            dest_path, video_url = await apply_editing_plan(raw_url, keep_segments, str(item_id))
+        raw_video = await session.get(RawVideo, UUID(str(rv_id)))
+        if not raw_video:
+            item.status = ContentStatus.failed
+            item.production_meta = {**meta, "render_error": f"RawVideo {rv_id} não encontrado", "render_progress": 0, "render_stage": "falhou"}
+            session.add(item)
+            await session.commit()
+            return
 
+        raw_url = await sign_storage_path(raw_video.r2_key, expires_in=86400)
+        keep_segments = extract_keep_segments(meta)
+
+        item.production_meta = {**meta, "render_progress": 20, "render_stage": "baixando vídeo"}
+        session.add(item)
+        await session.commit()
+
+    # ── PROCESSAMENTO: sem sessão DB aberta ───────────────────────────────────
+    try:
+        dest_path, video_url = await apply_editing_plan(raw_url, keep_segments, str(item_id))
+    except Exception as e:
+        logger.exception("editing_plan background FALHOU | item=%s | %s", item_id, e)
+        async with AsyncSessionLocal() as session:
+            item = await session.get(ContentItem, item_id)
+            if item:
+                item.status = ContentStatus.failed
+                item.production_meta = {**(item.production_meta or {}), "render_error": str(e), "render_progress": 0, "render_stage": "falhou"}
+                session.add(item)
+                await session.commit()
+        return
+
+    # ── SESSÃO 3: gravar resultado ─────────────────────────────────────────────
+    async with AsyncSessionLocal() as session:
+        item = await session.get(ContentItem, item_id)
+        if item:
             item.storage_path = dest_path
             item.status = ContentStatus.ready
             item.production_meta = {
-                **meta,
+                **(item.production_meta or {}),
                 "video_url": video_url,
                 "video_storage_path": dest_path,
                 "render_progress": 100,
@@ -368,16 +394,6 @@ async def _apply_editing_plan_background(item_id: UUID) -> None:
             session.add(item)
             await session.commit()
             logger.info("editing_plan background OK | item=%s", item_id)
-
-        except Exception as e:
-            logger.exception("editing_plan background FALHOU | item=%s | %s", item_id, e)
-            try:
-                item.status = ContentStatus.failed
-                item.production_meta = {**(item.production_meta or {}), "render_error": str(e)}
-                session.add(item)
-                await session.commit()
-            except Exception:
-                pass
 
 
 async def _compose_ai_video_v2_background(item_id) -> None:

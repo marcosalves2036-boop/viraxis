@@ -67,6 +67,16 @@ function VideoModal({
   const [nVideos, setNVideos] = useState(0);
   const [batchLoading, setBatchLoading] = useState(false);
   const [batchResult, setBatchResult] = useState<number | null>(null);
+  const [suggest, setSuggest] = useState<{
+    duration_seconds: number | null;
+    n_highlights: number;
+    suggested_n: number;
+    max_allowed: number;
+    requires_manual: boolean;
+    blocked: boolean;
+    block_reason: string | null;
+  } | null>(null);
+  const [suggestLoading, setSuggestLoading] = useState(false);
 
   const token = typeof window !== "undefined" ? localStorage.getItem("viraxis_token") : null;
 
@@ -99,16 +109,6 @@ function VideoModal({
     });
     setEditing(false);
     onSaved();
-  }
-
-  async function handleUseBrain() {
-    setBrainRunning(true); setBrainMsg(null);
-    try {
-      await officesApi.runBrainWithVideo(officeId, video.id);
-      setBrainMsg("✅ Decisão criada! Veja no escritório → decisões.");
-    } catch (e) {
-      setBrainMsg(`❌ ${e instanceof Error ? e.message : "Erro ao rodar BRAIN"}`);
-    } finally { setBrainRunning(false); }
   }
 
   async function handleBatchBrain() {
@@ -230,19 +230,36 @@ function VideoModal({
             ✏️ Editar metadados
           </button>
           <button
-            onClick={() => {
-              const highlights = video?.ai_analysis?.editorial_highlights ?? [];
-              if (highlights.length >= 2) {
-                setNVideos(0);
+            onClick={async () => {
+              // Buscar sugestão antes de abrir o modal
+              setSuggestLoading(true);
+              try {
+                const r = await fetch(
+                  `/api/brain/batch-suggest?raw_video_id=${video.id}&office_id=${officeId}`,
+                  { headers: { Authorization: `Bearer ${token}` } }
+                );
+                const s = await r.json();
+                setSuggest(s);
+
+                if (s.blocked) {
+                  // Vídeo curto: mostrar alerta, não abre modal
+                  alert(s.block_reason ?? "Vídeo muito curto para múltiplos vídeos.");
+                  return;
+                }
+
+                setNVideos(s.requires_manual ? 0 : s.suggested_n);
                 setBatchResult(null);
                 setShowBrainModal(true);
-              } else {
-                handleUseBrain();
+              } catch {
+                // fallback: abre modal sem sugestão
+                setShowBrainModal(true);
+              } finally {
+                setSuggestLoading(false);
               }
             }}
-            disabled={brainRunning || video.status !== "ready"}
+            disabled={brainRunning || suggestLoading || video.status !== "ready"}
             className="px-3 py-2 bg-violet-600 hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl text-xs font-semibold transition-colors">
-            {brainRunning ? "⚙️ Rodando BRAIN…" : "🧠 Usar no BRAIN"}
+            {brainRunning || suggestLoading ? "⚙️ Rodando BRAIN…" : "🧠 Usar no BRAIN"}
           </button>
           <button onClick={() => onDelete(video.id)}
             className="px-3 py-2 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 rounded-xl text-xs transition-colors ml-auto">
@@ -250,32 +267,71 @@ function VideoModal({
           </button>
         </div>
 
-        {showBrainModal && (() => {
-          const highlights = video.ai_analysis?.editorial_highlights ?? [];
+        {showBrainModal && suggest && (() => {
+          const isManual = suggest.requires_manual;
+          const maxN = suggest.max_allowed;
+
           return (
             <div className="fixed inset-0 z-[60] bg-black/70 flex items-center justify-center p-4">
               <div className="bg-[#0f0f17] border border-white/10 rounded-2xl p-6 w-full max-w-md space-y-5">
                 <h3 className="text-white font-semibold">🤖 Quantos vídeos gerar?</h3>
-                <div className="space-y-2">
-                  {[
-                    { label: `Auto — ${Math.min(highlights.length, 5)} destaques detectados`, value: 0 },
-                    { label: "1 vídeo", value: 1 },
-                    { label: "2 vídeos", value: 2 },
-                    { label: "3 vídeos", value: 3 },
-                  ].map(opt => (
-                    <label key={opt.value} className="flex items-center gap-3 p-3 rounded-xl bg-white/[0.04] cursor-pointer hover:bg-white/[0.07]">
-                      <input type="radio" name="n_videos" value={opt.value}
-                        checked={nVideos === opt.value}
-                        onChange={() => setNVideos(opt.value)}
-                        className="accent-violet-500" />
-                      <span className="text-white/80 text-sm">{opt.label}</span>
-                    </label>
-                  ))}
-                </div>
-                {highlights.length > 0 && (
+
+                {/* Info de duração */}
+                <p className="text-xs text-white/40">
+                  ⏱ {fmtDuration(video.duration_seconds)}
+                  {suggest.n_highlights > 0 && ` • ${suggest.n_highlights} destaques detectados`}
+                </p>
+
+                {/* Input numérico para vídeos longos (> 1h) */}
+                {isManual ? (
                   <div className="space-y-2">
+                    <p className="text-white/60 text-sm">
+                      Vídeo longo — informe quantos vídeos curtos deseja criar (máx {maxN}):
+                    </p>
+                    <input
+                      type="number" min={1} max={maxN}
+                      value={nVideos || ""}
+                      onChange={e => setNVideos(Math.min(maxN, Math.max(1, Number(e.target.value))))}
+                      placeholder={`1 – ${maxN}`}
+                      className="w-full bg-white/[0.06] border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:border-violet-500"
+                    />
+                    {nVideos > suggest.n_highlights && suggest.n_highlights > 0 && (
+                      <p className="text-amber-400 text-xs">
+                        ⚠️ {suggest.n_highlights} destaques reais + {nVideos - suggest.n_highlights} segmentos sintéticos
+                      </p>
+                    )}
+                    {suggest.n_highlights === 0 && nVideos > 0 && (
+                      <p className="text-amber-400 text-xs">
+                        ⚠️ Nenhum destaque detectado — todos os {nVideos} segmentos serão gerados sinteticamente.
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  /* Radio buttons dinâmicos para vídeos curtos/médios */
+                  <div className="space-y-2">
+                    {[
+                      { label: `Auto — ${suggest.suggested_n} ${suggest.suggested_n === 1 ? "vídeo" : "vídeos"} (recomendado)`, value: 0 },
+                      ...Array.from({ length: maxN }, (_, i) => ({
+                        label: `${i + 1} vídeo${i > 0 ? "s" : ""}`,
+                        value: i + 1,
+                      })),
+                    ].map(opt => (
+                      <label key={opt.value} className="flex items-center gap-3 p-3 rounded-xl bg-white/[0.04] cursor-pointer hover:bg-white/[0.07]">
+                        <input type="radio" name="n_videos" value={opt.value}
+                          checked={nVideos === opt.value}
+                          onChange={() => setNVideos(opt.value)}
+                          className="accent-violet-500" />
+                        <span className="text-white/80 text-sm">{opt.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+
+                {/* Lista de highlights reais */}
+                {(video.ai_analysis?.editorial_highlights ?? []).length > 0 && (
+                  <div className="space-y-1.5">
                     <p className="text-xs text-white/40 uppercase tracking-wider">Destaques detectados</p>
-                    {highlights.slice(0, 5).map((hl: {start: number; end: number; reason: string}, i: number) => (
+                    {(video.ai_analysis?.editorial_highlights ?? []).slice(0, 5).map((hl: {start: number; end: number; reason: string}, i: number) => (
                       <div key={i} className="flex gap-2 text-xs bg-white/[0.03] rounded-lg p-2">
                         <span className="text-violet-400 font-mono shrink-0">
                           {Math.floor(hl.start/60)}:{String(Math.floor(hl.start%60)).padStart(2,"0")}–
@@ -286,17 +342,22 @@ function VideoModal({
                     ))}
                   </div>
                 )}
+
+                {/* Resultado */}
                 {batchResult !== null && (
                   <p className="text-center text-xs text-emerald-400">
                     ✅ {batchResult} decisões criadas — acesse Gerenciar Escritório para aprovar.
                   </p>
                 )}
+
                 <div className="flex gap-3 pt-2">
-                  <button onClick={() => setShowBrainModal(false)}
+                  <button onClick={() => { setShowBrainModal(false); setSuggest(null); }}
                     className="flex-1 py-2.5 rounded-xl border border-white/10 text-white/50 text-sm hover:bg-white/[0.04]">
                     Cancelar
                   </button>
-                  <button onClick={handleBatchBrain} disabled={batchLoading}
+                  <button
+                    onClick={handleBatchBrain}
+                    disabled={batchLoading || (isManual && nVideos < 1)}
                     className="flex-1 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium disabled:opacity-50">
                     {batchLoading ? "Gerando..." : "Gerar com o BRAIN →"}
                   </button>

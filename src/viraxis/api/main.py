@@ -136,6 +136,42 @@ async def health() -> dict:
     return {"status": "ok", "service": "viraxis-api", "version": "0.3.0"}
 
 
+@app.get("/content-items/ffmpeg-check", tags=["infra"])
+async def ffmpeg_check() -> dict:
+    """Diagnóstico: confirma se o binário FFmpeg está disponível no container.
+
+    Usado para validar o ambiente de produção antes de rodar o pipeline de
+    corte de vídeo (editing_plan → process-video), que depende do FFmpeg
+    estar instalado no container Docker.
+    """
+    import shutil
+    import subprocess
+
+    ffmpeg_path = shutil.which("ffmpeg")
+    if not ffmpeg_path:
+        return {"ffmpeg_available": False, "version": None, "path": None}
+
+    version_str = None
+    try:
+        result = subprocess.run(
+            [ffmpeg_path, "-version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        first_line = (result.stdout or result.stderr or "").splitlines()
+        version_str = first_line[0] if first_line else None
+    except Exception as e:  # noqa: BLE001
+        return {
+            "ffmpeg_available": False,
+            "version": None,
+            "path": ffmpeg_path,
+            "error": f"{type(e).__name__}: {e}",
+        }
+
+    return {"ffmpeg_available": True, "version": version_str, "path": ffmpeg_path}
+
+
     # Extrai host/porta da DATABASE_URL
     from urllib.parse import urlparse
     parsed = urlparse(settings.database_url)

@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { auth, content as contentApi } from "@/lib/api";
+import { PublishModal } from "./PublishModal";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -76,13 +77,14 @@ const STATUS_LABELS: Record<string, string> = {
 // ── Content Detail Modal ──────────────────────────────────────────────────────
 
 function ContentModal({
-  item, onClose, onDelete, onApprove, isGenerating,
+  item, onClose, onDelete, onApprove, isGenerating, onPublishClick,
 }: {
   item: ContentItem;
   onClose: () => void;
   onDelete: (id: string, officeId: string) => Promise<void>;
   onApprove?: (itemId: string, officeId: string) => Promise<void>;
   isGenerating?: boolean;
+  onPublishClick?: (item: ContentItem) => void;
 }) {
   const [activeTab, setActiveTab] = useState<"roteiro" | "thumbnails" | "seo" | "plano" | "checklist">("roteiro");
   const [selectedThumb, setSelectedThumb] = useState(0);
@@ -178,6 +180,16 @@ function ContentModal({
             >
               ⬇️ Baixar vídeo
             </a>
+          </div>
+        )}
+        {item.status === "ready" && onPublishClick && (
+          <div className="mx-6 mt-3 mb-1 shrink-0">
+            <button
+              onClick={() => onPublishClick(item)}
+              className="w-full py-2 bg-emerald-600/80 hover:bg-emerald-500 text-white text-sm font-bold rounded-lg transition-colors"
+            >
+              📤 Publicar
+            </button>
           </div>
         )}
 
@@ -450,6 +462,7 @@ function ConteudoInner() {
   const [selectedItem, setSelectedItem] = useState<ContentItem | null>(null);
   const [generatingItems, setGeneratingItems] = useState<Set<string>>(new Set());
   const [officeId, setOfficeId] = useState(officeFilter ?? "all");
+  const [publishItem, setPublishItem] = useState<ContentItem | null>(null);
 
   const token = typeof window !== "undefined" ? localStorage.getItem("viraxis_token") : null;
   const headers = { Authorization: `Bearer ${token}` };
@@ -585,6 +598,17 @@ function ConteudoInner() {
           onDelete={deleteItem}
           onApprove={approveItem}
           isGenerating={generatingItems.has(selectedItem.id)}
+          onPublishClick={i => setPublishItem(i)}
+        />
+      )}
+
+      {publishItem && (
+        <PublishModal
+          itemId={publishItem.id}
+          officeId={publishItem.office_id ?? ""}
+          itemTitle={publishItem.title}
+          onClose={() => setPublishItem(null)}
+          onPublished={status => updateItem(publishItem.id, { status })}
         />
       )}
 
@@ -723,14 +747,25 @@ function ConteudoInner() {
                     </div>
                   )}
 
-                  <div className="flex items-center justify-between text-xs text-white/25">
-                    <span>{new Date(item.created_at).toLocaleDateString("pt-BR")}</span>
-                    {item.duration_seconds && <span>⏱ {Math.round(item.duration_seconds)}s</span>}
-                    {(isReady || isReview) && (
-                      <button onClick={() => setSelectedItem(item)} className="text-violet-400/60 hover:text-violet-300 transition-colors">
-                        {meta.plano_edicao ? "Ver plano →" : "Ver roteiro →"}
-                      </button>
-                    )}
+                  <div className="flex items-center justify-between text-xs text-white/25 gap-2">
+                    <span className="shrink-0">{new Date(item.created_at).toLocaleDateString("pt-BR")}</span>
+                    {item.duration_seconds && <span className="shrink-0">⏱ {Math.round(item.duration_seconds)}s</span>}
+                    <div className="flex items-center gap-3 ml-auto">
+                      {item.status === "ready" && (
+                        <button
+                          onClick={e => { e.stopPropagation(); setPublishItem(item); }}
+                          className="text-emerald-400/70 hover:text-emerald-300 transition-colors font-medium"
+                          title="Publicar nas redes sociais"
+                        >
+                          📤 Publicar
+                        </button>
+                      )}
+                      {(isReady || isReview) && (
+                        <button onClick={() => setSelectedItem(item)} className="text-violet-400/60 hover:text-violet-300 transition-colors">
+                          {meta.plano_edicao ? "Ver plano →" : "Ver roteiro →"}
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               );

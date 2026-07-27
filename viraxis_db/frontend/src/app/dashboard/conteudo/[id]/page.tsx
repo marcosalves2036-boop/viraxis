@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { auth, content } from "@/lib/api";
+import { PublishModal } from "../PublishModal";
 
 function toText(val: unknown): string {
   if (!val) return "";
@@ -60,6 +61,7 @@ export default function ContentDetailPage() {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
+  const [showPublish, setShowPublish] = useState(false);
 
   const token = typeof window !== "undefined" ? localStorage.getItem("viraxis_token") : null;
 
@@ -175,15 +177,25 @@ export default function ContentDetailPage() {
                 : "Gera narração em PT-BR do roteiro e compõe o .mp4 vertical (9:16)."}
             </p>
           </div>
-          {canGenerate && (
-            <button
-              onClick={handleGenerateVideo}
-              disabled={generating}
-              className="bg-violet-600 hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl text-sm font-semibold px-4 py-2 transition-colors shrink-0"
-            >
-              {generating ? "⚙️ Gerando vídeo…" : videoUrl ? "🔄 Gerar novamente" : item.status === "review" ? "✅ Aprovar e gerar vídeo" : "🎬 Gerar Vídeo"}
-            </button>
-          )}
+          <div className="flex items-center gap-2 shrink-0">
+            {canGenerate && (
+              <button
+                onClick={handleGenerateVideo}
+                disabled={generating}
+                className="bg-violet-600 hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl text-sm font-semibold px-4 py-2 transition-colors"
+              >
+                {generating ? "⚙️ Gerando vídeo…" : videoUrl ? "🔄 Gerar novamente" : item.status === "review" ? "✅ Aprovar e gerar vídeo" : "🎬 Gerar Vídeo"}
+              </button>
+            )}
+            {item.status === "ready" && (
+              <button
+                onClick={() => setShowPublish(true)}
+                className="bg-emerald-600/80 hover:bg-emerald-500 text-white rounded-xl text-sm font-semibold px-4 py-2 transition-colors"
+              >
+                📤 Publicar
+              </button>
+            )}
+          </div>
         </div>
         {generating && (
           <p className="text-violet-300/60 text-xs mt-3 animate-pulse">
@@ -475,6 +487,16 @@ export default function ContentDetailPage() {
           )}
         </div>
       </div>
+
+      {showPublish && officeId && (
+        <PublishModal
+          itemId={item.id}
+          officeId={officeId}
+          itemTitle={item.title}
+          onClose={() => setShowPublish(false)}
+          onPublished={status => setItem(prev => prev ? { ...prev, status } : prev)}
+        />
+      )}
     </div>
   );
 }

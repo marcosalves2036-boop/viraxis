@@ -23,10 +23,11 @@ from fastapi.responses import RedirectResponse
 from jose import JWTError, jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from viraxis.api.deps import get_session
+from viraxis.api.deps import get_current_user, get_session
 from viraxis.infrastructure.database.session import AsyncSessionLocal
 from viraxis.config import settings
 from viraxis.domain.models.social_account import SocialAccount, SocialPlatform
+from viraxis.domain.models.user import User
 from viraxis.infrastructure.repositories.social_account import SocialAccountRepository
 
 logger = logging.getLogger(__name__)
@@ -220,10 +221,14 @@ TIKTOK_SCOPES = "user.info.basic,video.upload"
 
 
 @router.get("/tiktok/connect")
+@router.get("/tiktok/authorize")
 async def tiktok_connect(
     access_token: str = Query(...),
     office_id: str | None = Query(None),
 ):
+    """Inicia fluxo OAuth TikTok. Exposto em /tiktok/connect (padrão interno,
+    espelha /google/connect) e /tiktok/authorize (alias esperado pelo frontend/Publisher).
+    """
     user_id = _verify_access_token(access_token)
     # PKCE desabilitado temporariamente para diagnóstico de sandbox
     state = _create_state(user_id, office_id)
@@ -235,6 +240,47 @@ async def tiktok_connect(
         "state": state,
     }
     return RedirectResponse(url=f"{TIKTOK_AUTH_URL}?{urlencode(params)}")
+
+
+@router.get("/tiktok/status")
+async def tiktok_status(
+    office_id: str | None = Query(None, description="Filtra pela conta vinculada a este escritório"),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Retorna se o usuário autenticado tem uma conta TikTok conectada.
+
+    Autenticação via Bearer JWT (Authorization header), igual aos demais
+    endpoints protegidos da API (ex: /social-accounts). Não expõe tokens.
+    """
+    repo = SocialAccountRepository(session)
+    accounts = await repo.list_by_user(
+        current_user.id, platform=SocialPlatform.tiktok, active_only=True
+    )
+
+    if office_id:
+        accounts = [a for a in accounts if str(a.office_id) == office_id]
+
+    if not accounts:
+        return {"connected": False, "platform": "tiktok", "account": None}
+
+    # Usuário pode ter mais de uma conta TikTok vinculada (multi-office);
+    # se office_id não for informado, retorna a mais recente.
+    account = accounts[0]
+    return {
+        "connected": True,
+        "platform": "tiktok",
+        "account": {
+            "id": str(account.id),
+            "platform_username": account.platform_username,
+            "platform_user_id": account.platform_user_id,
+            "office_id": str(account.office_id) if account.office_id else None,
+            "token_expires_at": (
+                account.token_expires_at.isoformat() if account.token_expires_at else None
+            ),
+            "is_active": account.is_active,
+        },
+    }
 
 
 @router.get("/tiktok/callback")

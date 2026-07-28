@@ -142,6 +142,12 @@ class Settings(BaseSettings):
         default="https://viraxis.onrender.com/auth/tiktok/callback",
         alias="TIKTOK_REDIRECT_URI",
     )
+    # Modo dry-run — simula publish_to_tiktok() sem chamar a API real do TikTok.
+    # Usar enquanto o app (client_key aw54mjn8uvws4dkh) estiver em modo
+    # sandbox/"unaudited" (sem aprovacao de video.publish para Direct Post
+    # publico). Default False = tenta chamada real (assumindo app aprovado
+    # ou testando manualmente o retorno de erro de escopo).
+    tiktok_dry_run: bool = Field(default=False, alias="TIKTOK_DRY_RUN")
 
     # Meta (Facebook / Instagram)
     meta_app_id: str = Field(default="", alias="META_APP_ID")

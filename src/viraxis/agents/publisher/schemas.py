@@ -36,6 +36,7 @@ class PublishResult(BaseModel):
     external_id: str | None = None     # ID do post na plataforma
     url: str | None = None             # URL publica do post
     error_message: str | None = None
+    dry_run: bool = False              # True quando simulado (ex: TIKTOK_DRY_RUN)
 
 
 class PublisherOutput(BaseModel):

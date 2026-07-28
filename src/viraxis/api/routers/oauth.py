@@ -17,7 +17,6 @@ from urllib.parse import urlencode
 from uuid import UUID
 
 import httpx
-from cryptography.fernet import Fernet
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from jose import JWTError, jwt
@@ -29,21 +28,16 @@ from viraxis.config import settings
 from viraxis.domain.models.social_account import SocialAccount, SocialPlatform
 from viraxis.domain.models.user import User
 from viraxis.infrastructure.repositories.social_account import SocialAccountRepository
+from viraxis.infrastructure.token_crypto import encrypt_token as _encrypt_token
+from viraxis.infrastructure.token_crypto import get_fernet as _get_fernet
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["oauth"])
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
-
-def _get_fernet() -> Fernet:
-    """Deriva chave Fernet de 32 bytes a partir do secret_key."""
-    key_bytes = hashlib.sha256(settings.secret_key.encode()).digest()
-    import base64
-    return Fernet(base64.urlsafe_b64encode(key_bytes))
-
-
-def _encrypt_token(token: str) -> str:
-    return _get_fernet().encrypt(token.encode()).decode()
+# _encrypt_token / _get_fernet agora vivem em viraxis.infrastructure.token_crypto
+# (compartilhado com agents/publisher/runner.py, que precisa DESCRIPTOGRAFAR
+# com a mesma derivacao de chave usada aqui para criptografar).
 
 
 def _create_state(user_id: str, office_id: str | None, code_verifier: str | None = None) -> str:

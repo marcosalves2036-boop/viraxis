@@ -13,6 +13,7 @@ Fluxo:
 import asyncio
 import logging
 import traceback
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from sqlalchemy import select
@@ -21,6 +22,7 @@ from viraxis.agents.publisher.caption_generator import generate_caption_sync
 from viraxis.agents.publisher.platform_clients import (
     PublishPlatformError,
     publish_to_platform,
+    refresh_tiktok_token,
 )
 from viraxis.agents.publisher.schemas import (
     PublisherInput,
@@ -34,40 +36,69 @@ from viraxis.domain.models.social_account import SocialAccount
 from viraxis.infrastructure.database.session import AsyncSessionLocal
 from viraxis.infrastructure.repositories.agent_run_log import AgentRunLogRepository
 from viraxis.infrastructure.repositories.content_item import ContentItemRepository
+from viraxis.infrastructure.token_crypto import decrypt_token as _decrypt_token
+from viraxis.infrastructure.token_crypto import encrypt_token as _encrypt_token
+from viraxis.infrastructure.video_processor import sign_storage_path
 
 logger = logging.getLogger(__name__)
 
-_FERNET_UNAVAILABLE_MSG = (
-    "Fernet key nao configurada (SECRET_KEY). "
-    "Tokens nao podem ser descriptografados."
-)
+# Margem de seguranca antes de token_expires_at: se faltar menos que isso,
+# tenta renovar o token PROATIVAMENTE em vez de deixar a chamada de publish
+# falhar com "token expirado".
+TOKEN_REFRESH_BUFFER = timedelta(minutes=5)
 
 
-def _decrypt_token(token_enc: str | None) -> str | None:
-    """Descriptografa um token Fernet.
+async def _maybe_refresh_tiktok_token(
+    session, account: SocialAccount,
+) -> None:
+    """Renova o access_token do TikTok se estiver expirado/perto de expirar.
 
-    Retorna None se o token for None ou se a chave nao estiver configurada.
-    Em producao a chave fica em settings.secret_key.
+    So atua quando `account.platform` == tiktok e ha refresh_token_enc
+    disponivel. Atualiza `account` in-place (access_token_enc,
+    refresh_token_enc, token_expires_at) e persiste via `session.flush()`.
+    Nao lanca excecao em caso de falha — apenas loga o erro, deixando a
+    tentativa de publish seguinte reportar um erro claro (token expirado)
+    caso o token antigo realmente nao funcione mais.
     """
-    if not token_enc:
-        return None
-    try:
-        from cryptography.fernet import Fernet  # noqa: PLC0415
-        from viraxis.config import settings  # noqa: PLC0415
+    if str(account.platform.value if hasattr(account.platform, "value") else account.platform) != "tiktok":
+        return
+    if not account.refresh_token_enc:
+        return
+    if account.token_expires_at is None:
+        return
+    if account.token_expires_at > datetime.now(timezone.utc) + TOKEN_REFRESH_BUFFER:
+        return  # ainda valido por tempo suficiente
 
-        key = settings.secret_key.encode()
-        # Fernet exige chave de 32 bytes base64-encoded
-        # Se a key nao for Fernet-compativel, retorna o token como fallback de dev
-        try:
-            f = Fernet(key)
-            return f.decrypt(token_enc.encode()).decode()
-        except Exception:
-            # Em dev, o token pode estar em plaintext para facilitar testes
-            logger.warning("Token nao parece ser Fernet — usando como plaintext (dev only)")
-            return token_enc
-    except ImportError:
-        logger.error("cryptography nao instalada: pip install cryptography")
-        return token_enc  # fallback para dev
+    old_refresh = _decrypt_token(account.refresh_token_enc)
+    if not old_refresh:
+        logger.warning(
+            "TikTok refresh_token nao pode ser descriptografado | account=%s — "
+            "usuario provavelmente precisa reconectar a conta.",
+            account.id,
+        )
+        return
+
+    try:
+        new_tokens = await asyncio.to_thread(refresh_tiktok_token, old_refresh)
+        account.access_token_enc = _encrypt_token(new_tokens["access_token"])
+        new_refresh = new_tokens.get("refresh_token")
+        if new_refresh:
+            account.refresh_token_enc = _encrypt_token(new_refresh)
+        account.token_expires_at = datetime.now(timezone.utc) + timedelta(
+            seconds=int(new_tokens.get("expires_in", 86400))
+        )
+        session.add(account)
+        await session.flush()
+        logger.info(
+            "TikTok token renovado com sucesso | account=%s | novo_expires_at=%s",
+            account.id, account.token_expires_at,
+        )
+    except PublishPlatformError as exc:
+        logger.error(
+            "Falha ao renovar token TikTok | account=%s | erro=%s — "
+            "seguindo com o token atual (pode falhar na publicacao).",
+            account.id, exc,
+        )
 
 
 async def run_publisher(publisher_input: PublisherInput) -> PublisherOutput:
@@ -143,15 +174,40 @@ async def run_publisher(publisher_input: PublisherInput) -> PublisherOutput:
                     ))
                     continue
 
+                # ---- 3b. Renovar token TikTok se expirado/perto de expirar ----
+                if target.platform == "tiktok":
+                    await _maybe_refresh_tiktok_token(session, account)
+
                 access_token = _decrypt_token(account.access_token_enc)
                 if not access_token:
                     results.append(PublishResult(
                         platform=target.platform,
                         social_account_id=target.social_account_id,
                         success=False,
-                        error_message="Token de acesso nao disponivel.",
+                        error_message="Token de acesso nao disponivel (falha ao descriptografar).",
                     ))
                     continue
+
+                # ---- 3c. Resolver URL de download do video ----
+                # TikTok precisa de uma URL http(s) direta (assinada) para
+                # baixar o binario do video — item.storage_path e apenas o
+                # path relativo no bucket do Supabase, nao uma URL.
+                video_source = item.storage_path
+                if target.platform == "tiktok" and item.storage_path:
+                    try:
+                        video_source = await sign_storage_path(item.storage_path)
+                    except Exception as exc:
+                        logger.error(
+                            "Falha ao gerar signed URL do video | item=%s | erro=%s",
+                            content_item_id, exc,
+                        )
+                        results.append(PublishResult(
+                            platform=target.platform,
+                            social_account_id=target.social_account_id,
+                            success=False,
+                            error_message=f"Nao foi possivel acessar o video no storage: {exc}",
+                        ))
+                        continue
 
                 # ---- 4. Gerar caption se nao fornecida ----
                 caption = target.caption
@@ -177,21 +233,23 @@ async def run_publisher(publisher_input: PublisherInput) -> PublisherOutput:
                         publish_to_platform,
                         target.platform,
                         access_token,
-                        item.storage_path,
+                        video_source,
                         publisher_input.title,
                         full_caption,
                         target.hashtags,
                     )
+                    is_dry_run = bool(external_id) and external_id.startswith("tiktok_dryrun_")
                     results.append(PublishResult(
                         platform=target.platform,
                         social_account_id=target.social_account_id,
                         success=True,
                         external_id=external_id,
                         url=url,
+                        dry_run=is_dry_run,
                     ))
                     logger.info(
-                        "Publicado | platform=%s | external_id=%s | url=%s",
-                        target.platform, external_id, url,
+                        "Publicado | platform=%s | external_id=%s | url=%s | dry_run=%s",
+                        target.platform, external_id, url, is_dry_run,
                     )
                 except PublishPlatformError as exc:
                     results.append(PublishResult(
@@ -207,13 +265,13 @@ async def run_publisher(publisher_input: PublisherInput) -> PublisherOutput:
             failed = [r for r in results if not r.success]
 
             if successful:
-                from datetime import datetime, timezone  # noqa: PLC0415
                 pub_entries = [
                     {
                         "platform": r.platform,
                         "external_id": r.external_id,
                         "published_at": datetime.now(timezone.utc).isoformat(),
                         "url": r.url,
+                        "dry_run": r.dry_run,
                     }
                     for r in successful
                 ]

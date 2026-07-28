@@ -58,17 +58,38 @@ def _storage_headers() -> dict:
     return {"Authorization": f"Bearer {key}", "apikey": key}
 
 
+async def _iter_file_chunks(file_path: Path, chunk_size: int = 1024 * 1024):
+    """Gerador assíncrono que lê o arquivo em blocos — mantém uso de RAM baixo.
+
+    httpx.AsyncClient exige um iterável ASSÍNCRONO para `content=` quando se
+    quer streaming; passar um file handle síncrono (`open(...)`) direto
+    dispara `RuntimeError: Attempted to send a sync request with an
+    AsyncClient instance.` — esse era exatamente o bug em produção que este
+    helper corrige.
+    """
+    loop = asyncio.get_running_loop()
+    with open(file_path, "rb") as f:
+        while True:
+            chunk = await loop.run_in_executor(None, f.read, chunk_size)
+            if not chunk:
+                break
+            yield chunk
+
+
 async def upload_to_storage(file_path: Path, dest_path: str, content_type: str = "video/mp4") -> str:
-    """Sobe arquivo para Supabase em streaming — não carrega em RAM."""
+    """Sobe arquivo para Supabase em streaming — não carrega o arquivo inteiro em RAM."""
     settings = get_settings()
     url = (
         f"{settings.supabase_url}/storage/v1/object/"
         f"{settings.supabase_bucket}/{dest_path}"
     )
     headers = {**_storage_headers(), "Content-Type": content_type, "x-upsert": "true"}
+    file_size = os.path.getsize(file_path)
+    headers["Content-Length"] = str(file_size)
     async with httpx.AsyncClient(timeout=300.0) as client:
-        with open(file_path, "rb") as f:
-            resp = await client.post(url, content=f, headers=headers)
+        resp = await client.post(
+            url, content=_iter_file_chunks(file_path), headers=headers
+        )
         if resp.status_code not in (200, 201):
             raise RuntimeError(
                 f"Upload Supabase falhou ({resp.status_code}): {resp.text[:300]}"

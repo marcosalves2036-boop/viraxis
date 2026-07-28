@@ -4,6 +4,7 @@ Gerencia as contas de redes sociais vinculadas a escritórios.
 Tokens OAuth são armazenados criptografados (Fernet) — nunca expostos na API.
 """
 
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -16,6 +17,8 @@ from viraxis.domain.models.social_account import SocialAccount, SocialPlatform
 from viraxis.domain.models.user import User
 from viraxis.domain.models.office import Office
 from viraxis.infrastructure.repositories.social_account import SocialAccountRepository
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/social-accounts", tags=["social-accounts"])
 
@@ -108,19 +111,44 @@ async def list_social_accounts(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    """Lista as contas sociais do usuário autenticado."""
+    """Lista as contas sociais do usuário autenticado.
+
+    Auditoria de seguranca multi-tenant (2026-07-27): quando `office_id` e
+    informado, a posse do escritorio pelo usuario autenticado agora e
+    validada de forma explicita e ANTES de qualquer query em SocialAccount —
+    mesmo padrao usado em offices.py/content_items.py/raw_videos.py. Antes,
+    a checagem so acontecia depois de buscar as contas do office (via loop
+    comparando acc.user_id), o que nao chegava a vazar dados (a excecao era
+    levantada antes do `return`), mas deixava a rota inconsistente com o
+    restante da API e mais fragil a regressao futura caso a query de
+    listagem por office mude de comportamento.
+    """
     repo = SocialAccountRepository(session)
 
     if office_id:
+        try:
+            office_uuid = UUID(office_id)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="office_id invalido")
+
+        office_result = await session.execute(
+            select(Office).where(
+                Office.id == office_uuid,
+                Office.user_id == current_user.id,
+            )
+        )
+        if not office_result.scalar_one_or_none():
+            logger.warning(
+                "Tentativa de listar social-accounts de office alheio | user=%s office=%s",
+                current_user.id, office_id,
+            )
+            raise HTTPException(status_code=404, detail="Escritório não encontrado")
+
         accounts = await repo.list_by_office(
-            UUID(office_id),
+            office_uuid,
             platform=SocialPlatform(platform) if platform else None,
             active_only=not include_inactive,
         )
-        # Garante que o office pertence ao usuário
-        for acc in accounts:
-            if acc.user_id != current_user.id:
-                raise HTTPException(status_code=403, detail="Acesso negado")
     else:
         accounts = await repo.list_by_user(
             current_user.id,

@@ -14,6 +14,8 @@ interface AiAnalysis {
   transcription_text?: string;
   scenes?: Array<{ start: number; end: number; description: string }>;
   editorial_highlights?: Array<{ start: number; end: number; reason: string }>;
+  status?: string;
+  error?: string;
 }
 
 interface RawVideo {
@@ -30,8 +32,11 @@ interface GeneratedItem {
   production_meta?: { raw_video?: { id?: string }; raw_video_id?: string; video_url?: string };
 }
 
+// Indicador automático de progresso — o usuário nunca precisa clicar em
+// "Analisar" manualmente: pending (enviando/aguardando) → processing
+// (analisando com IA) → ready (analisado) ou failed (erro na análise).
 const STATUS_LABEL: Record<string, string> = {
-  pending: "Aguardando", ready: "Pronto", processing: "Analisando...", failed: "Falhou",
+  pending: "Enviando...", ready: "Analisado", processing: "Analisando...", failed: "Erro na análise",
 };
 const STATUS_CLASS: Record<string, string> = {
   pending:    "bg-white/10 text-white/50 border-white/10",
@@ -39,6 +44,14 @@ const STATUS_CLASS: Record<string, string> = {
   processing: "bg-violet-500/10 text-violet-400 border-violet-500/20",
   failed:     "bg-red-500/10 text-red-400 border-red-500/20",
 };
+
+function highlightsCount(v: RawVideo): number {
+  return v.ai_analysis?.editorial_highlights?.length ?? 0;
+}
+
+function analysisErrorMessage(v: RawVideo): string | null {
+  return v.ai_analysis?.error ?? null;
+}
 
 function fmtDuration(s: number | null) {
   if (!s) return "—";
@@ -155,15 +168,30 @@ function VideoModal({
               ⏱ {fmtDuration(video.duration_seconds)} • 📅 {new Date(video.created_at).toLocaleDateString("pt-BR")}
               {video.tags?.length > 0 && <> • 🏷 {video.tags.slice(0, 5).join(", ")}</>}
             </p>
+            {video.status === "ready" && (
+              <p className="text-violet-300/80 text-xs mt-1">
+                ✨ {highlightsCount(video)} {highlightsCount(video) === 1 ? "destaque detectado" : "destaques detectados"}
+              </p>
+            )}
           </div>
           <button onClick={onClose} className="text-white/30 hover:text-white/60 text-xl shrink-0">✕</button>
         </div>
 
-        {/* Player */}
+        {/* Player — preview do vídeo bruto com a URL assinada do Supabase */}
         {video.r2_url ? (
           <video src={video.r2_url} controls className="w-full rounded-xl bg-black aspect-video" />
         ) : (
-          <div className="w-full rounded-xl bg-black/60 aspect-video flex items-center justify-center text-white/20 text-4xl">🎬</div>
+          <div className="w-full rounded-xl bg-black/60 aspect-video flex items-center justify-center text-white/20 text-4xl">
+            {video.status === "pending" ? "📤" : "🎬"}
+          </div>
+        )}
+
+        {/* Erro de análise */}
+        {video.status === "failed" && analysisErrorMessage(video) && (
+          <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4">
+            <p className="text-xs font-semibold text-red-400 uppercase tracking-wider mb-1.5">❌ Erro na análise</p>
+            <p className="text-red-300/80 text-sm leading-relaxed">{analysisErrorMessage(video)}</p>
+          </div>
         )}
 
         {/* Resumo da IA */}
@@ -413,12 +441,14 @@ function BibliotecaContent() {
 
   useEffect(() => { loadVideos(); }, [loadVideos]);
 
-  // Polling a cada 8s enquanto houver vídeos processando
+  // Polling a cada 5s enquanto houver vídeos em análise (processing) ou
+  // aguardando upload/confirmação (pending) — mantém a lista sempre fresca
+  // sem exigir reload manual da página.
   useEffect(() => {
-    const processing = videos.some(v => v.status === "processing" || v.status === "pending");
-    if (!processing) return;
-    const id = setInterval(() => loadVideos(), 8000);
-    return () => clearInterval(id);
+    const hasPendingWork = videos.some(v => v.status === "processing" || v.status === "pending");
+    if (!hasPendingWork) return;
+    const intervalId = setInterval(() => loadVideos(), 5000);
+    return () => clearInterval(intervalId);
   }, [videos, loadVideos]);
 
   // Thumbnails via canvas (frame ~3s) para vídeos prontos
@@ -581,10 +611,25 @@ function BibliotecaContent() {
       {loading && videos.length === 0 ? (
         <div className="text-white/40 text-sm py-8 text-center">Carregando...</div>
       ) : videos.length === 0 ? (
-        <div className="card-glass rounded-2xl p-12 text-center space-y-3">
-          <div className="text-5xl">🎬</div>
-          <p className="text-white/60 text-base">Nenhum vídeo na biblioteca ainda.</p>
-          <p className="text-white/30 text-sm">Adicione vídeos brutos para o pipeline usar como base de publicação.</p>
+        <div className="card-glass rounded-2xl p-12 text-center space-y-4">
+          <div className="text-6xl">🎬</div>
+          <div className="space-y-1.5">
+            <p className="text-white/70 text-lg font-semibold">Sua biblioteca está vazia</p>
+            <p className="text-white/35 text-sm max-w-sm mx-auto">
+              Envie vídeos brutos para que a IA analise cenas, transcrição e destaques
+              automaticamente — sem precisar clicar em nada depois do upload.
+            </p>
+          </div>
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading || !selectedOfficeId}
+            className="inline-flex items-center gap-2 px-5 py-3 bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl text-sm font-semibold transition-colors"
+          >
+            <span className="text-base">▲</span> Enviar primeiro vídeo
+          </button>
+          {!selectedOfficeId && (
+            <p className="text-white/25 text-xs">Selecione um escritório acima para habilitar o upload.</p>
+          )}
         </div>
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
@@ -602,7 +647,13 @@ function BibliotecaContent() {
                 ) : (
                   <span className="text-3xl opacity-30">🎬</span>
                 )}
-                {/* Overlays de status */}
+                {/* Overlays de status — badge/spinner automático, sem botão manual */}
+                {v.status === "pending" && (
+                  <div className="absolute inset-0 bg-black/55 flex flex-col items-center justify-center gap-1.5">
+                    <span className="animate-pulse text-lg">📤</span>
+                    <span className="text-white/70 text-[11px] font-semibold">Enviando...</span>
+                  </div>
+                )}
                 {v.status === "processing" && (
                   <div className="absolute inset-0 bg-black/55 flex flex-col items-center justify-center gap-1.5">
                     <span className="animate-spin text-lg">⚙️</span>
@@ -613,7 +664,12 @@ function BibliotecaContent() {
                   <span className="absolute top-1.5 right-1.5 text-xs bg-black/60 rounded-full px-1.5 py-0.5">✅</span>
                 )}
                 {v.status === "failed" && (
-                  <span className="absolute top-1.5 right-1.5 text-xs bg-black/60 rounded-full px-1.5 py-0.5">❌</span>
+                  <span
+                    className="absolute top-1.5 right-1.5 text-xs bg-black/60 rounded-full px-1.5 py-0.5"
+                    title={analysisErrorMessage(v) || "Erro na análise"}
+                  >
+                    ❌
+                  </span>
                 )}
                 {/* Duração */}
                 <span className="absolute bottom-1.5 left-1.5 text-[11px] font-semibold text-white bg-black/70 rounded px-1.5 py-0.5">
@@ -625,7 +681,21 @@ function BibliotecaContent() {
                 <p className="text-white/80 text-xs font-medium truncate group-hover:text-white transition-colors">
                   {v.title || v.original_filename}
                 </p>
-                <p className="text-white/25 text-[10px] mt-0.5">
+                {/* Chips: status, duração e destaques detectados */}
+                <div className="flex flex-wrap items-center gap-1 mt-1.5">
+                  <span className={`inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded-full border ${STATUS_CLASS[v.status] || STATUS_CLASS.pending}`}>
+                    {STATUS_LABEL[v.status] || v.status}
+                  </span>
+                  <span className="inline-flex items-center gap-0.5 text-[10px] text-white/40 bg-white/[0.05] rounded-full px-1.5 py-0.5">
+                    ⏱ {fmtDuration(v.duration_seconds)}
+                  </span>
+                  {v.status === "ready" && (
+                    <span className="inline-flex items-center gap-0.5 text-[10px] text-violet-300/80 bg-violet-500/[0.08] rounded-full px-1.5 py-0.5">
+                      ✨ {highlightsCount(v)} {highlightsCount(v) === 1 ? "destaque" : "destaques"}
+                    </span>
+                  )}
+                </div>
+                <p className="text-white/25 text-[10px] mt-1">
                   {new Date(v.created_at).toLocaleDateString("pt-BR")}
                 </p>
               </div>

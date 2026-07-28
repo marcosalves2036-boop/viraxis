@@ -3,7 +3,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from viraxis.api.routers import agent_run_logs, auth, billing, brain, content_items, dev, oauth, offices, raw_videos, social_accounts, users
+from viraxis.api.routers import agent_run_logs, analytics, auth, billing, brain, content_items, dev, oauth, offices, raw_videos, social_accounts, users
 
 app = FastAPI(
     title="VIRAXIS API",
@@ -58,6 +58,7 @@ app.include_router(agent_run_logs.router)    # PR-2 Fase 2
 app.include_router(social_accounts.router)   # PR-5 Fase 2
 app.include_router(billing.router)           # PR-8 Fase 2
 app.include_router(users.router)
+app.include_router(analytics.router)      # Dashboard de analytics
 app.include_router(dev.router)
 
 

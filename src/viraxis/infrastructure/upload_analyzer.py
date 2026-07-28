@@ -377,8 +377,14 @@ async def analyze_uploaded_video(video_id: str, signed_url: str) -> None:
       6. Mescla tudo em ai_analysis JSONB
       7. Atualiza raw_videos: duration_seconds + ai_analysis + status = ready
 
-    Em caso de falha parcial (ex: Gemini falha mas Whisper ok), salva o que tiver.
-    Nunca deixa o vídeo em status 'processing' em caso de erro — sempre volta a 'ready'.
+    Em caso de falha PARCIAL (ex: Gemini falha mas Whisper ok, ou vice-versa),
+    salva o que tiver e o vídeo volta para status = ready com
+    ai_analysis["status"] = "partial" — o vídeo continua utilizável no BRAIN.
+
+    Em caso de falha CRÍTICA (download do vídeo impossível, timeout, ffprobe
+    inutilizável, ou qualquer exceção não tratada antes de qualquer resultado
+    parcial existir), o vídeo é marcado com status = failed e uma mensagem de
+    erro legível é salva em ai_analysis["error"] para exibição na UI.
     """
     logger.info("upload_analyzer iniciando | video_id=%s", video_id)
 
@@ -394,14 +400,15 @@ async def analyze_uploaded_video(video_id: str, signed_url: str) -> None:
         )
         await session.commit()
 
+    technical_meta: dict = {}
+    gemini_analysis: dict = {}
+    transcription: dict = {"text": "", "segments": []}
+    critical_error: str | None = None
+
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
         video_path = str(tmp / "video_input")
         audio_path = str(tmp / "audio.mp3")
-
-        technical_meta: dict = {}
-        gemini_analysis: dict = {}
-        transcription: dict = {"text": "", "segments": []}
 
         try:
             # 2. Download do vídeo
@@ -412,8 +419,11 @@ async def analyze_uploaded_video(video_id: str, signed_url: str) -> None:
                     with open(video_path, "wb") as f:
                         async for chunk in resp.aiter_bytes(chunk_size=1024 * 1024):
                             f.write(chunk)
+            downloaded_size = Path(video_path).stat().st_size
+            if downloaded_size == 0:
+                raise RuntimeError("Download retornou arquivo vazio (0 bytes).")
             logger.info("Download OK | video_id=%s | size=%dMB", video_id,
-                        Path(video_path).stat().st_size // 1024 // 1024)
+                        downloaded_size // 1024 // 1024)
 
             # 3. Metadados técnicos (ffprobe — síncrono, rápido)
             technical_meta = await asyncio.to_thread(_run_ffprobe, video_path)
@@ -421,7 +431,10 @@ async def analyze_uploaded_video(video_id: str, signed_url: str) -> None:
             logger.info("ffprobe OK | video_id=%s | duration=%.1fs | res=%s",
                         video_id, duration, technical_meta.get("resolution"))
 
-            # 4. Análise visual (Gemini) e Transcrição (Whisper) em paralelo
+            # 4. Análise visual (Gemini) e Transcrição (Whisper) em paralelo.
+            # Falhas individuais aqui já são tratadas dentro de cada helper
+            # (retornam dict vazio / sem texto) e NÃO disparam este except —
+            # portanto não são consideradas falha crítica.
             audio_ok = await _extract_audio_for_whisper(video_path, audio_path)
 
             async def _sem_audio() -> dict:
@@ -438,9 +451,41 @@ async def analyze_uploaded_video(video_id: str, signed_url: str) -> None:
                 gemini_task, whisper_task, return_exceptions=False
             )
 
+        except httpx.HTTPStatusError as e:
+            critical_error = (
+                f"Falha ao baixar o vídeo do armazenamento (HTTP {e.response.status_code}). "
+                "A URL assinada pode ter expirado ou o arquivo foi removido."
+            )
+            logger.error("upload_analyzer erro crítico (download) | video_id=%s | erro=%s", video_id, e)
+        except httpx.TimeoutException as e:
+            critical_error = "Tempo esgotado ao baixar o vídeo. Tente reenviar o arquivo."
+            logger.error("upload_analyzer timeout de download | video_id=%s | erro=%s", video_id, e)
         except Exception as e:
+            critical_error = f"Falha inesperada ao processar o vídeo: {e}"
             logger.error("upload_analyzer erro crítico | video_id=%s | erro=%s", video_id, e)
-            # Mesmo em erro, salva o que tiver e volta a 'ready'
+
+    if critical_error:
+        # Falha crítica: não há vídeo baixado nem metadados técnicos utilizáveis.
+        # Marca o vídeo como 'failed' com mensagem legível em vez de deixá-lo
+        # preso em 'processing' ou mascarar o erro como 'ready'.
+        async with AsyncSessionLocal() as session:
+            from sqlalchemy import update as sa_update
+            from uuid import UUID as _UUID
+
+            await session.execute(
+                sa_update(RawVideo)
+                .where(RawVideo.id == _UUID(video_id))
+                .values(
+                    status=RawVideoStatus.failed,
+                    ai_analysis={"status": "failed", "error": critical_error},
+                )
+            )
+            await session.commit()
+        logger.error(
+            "upload_analyzer FALHOU definitivamente | video_id=%s | motivo=%s",
+            video_id, critical_error,
+        )
+        return
 
     # 5. Montar ai_analysis final
     ai_analysis = {

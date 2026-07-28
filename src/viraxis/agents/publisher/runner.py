@@ -189,11 +189,12 @@ async def run_publisher(publisher_input: PublisherInput) -> PublisherOutput:
                     continue
 
                 # ---- 3c. Resolver URL de download do video ----
-                # TikTok precisa de uma URL http(s) direta (assinada) para
-                # baixar o binario do video — item.storage_path e apenas o
-                # path relativo no bucket do Supabase, nao uma URL.
+                # TikTok e Instagram precisam de uma URL http(s) direta
+                # (assinada) para baixar/buscar o binario do video —
+                # item.storage_path e apenas o path relativo no bucket do
+                # Supabase, nao uma URL.
                 video_source = item.storage_path
-                if target.platform == "tiktok" and item.storage_path:
+                if target.platform in ("tiktok", "instagram") and item.storage_path:
                     try:
                         video_source = await sign_storage_path(item.storage_path)
                     except Exception as exc:
@@ -237,6 +238,7 @@ async def run_publisher(publisher_input: PublisherInput) -> PublisherOutput:
                         publisher_input.title,
                         full_caption,
                         target.hashtags,
+                        account.platform_user_id,
                     )
                     is_dry_run = bool(external_id) and external_id.startswith("tiktok_dryrun_")
                     results.append(PublishResult(

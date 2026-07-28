@@ -49,6 +49,11 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# Graph API v19 — usado pelo publish_to_instagram
+IG_GRAPH_BASE = "https://graph.facebook.com/v19.0"
+IG_POLL_INTERVAL_SECONDS = 5
+IG_POLL_MAX_ATTEMPTS = 36  # 36 * 5s = até 3min aguardando o processamento do vídeo
+
 
 class PublishPlatformError(Exception):
     """Erro ao publicar em uma plataforma especifica."""
@@ -521,19 +526,164 @@ def publish_to_instagram(
     video_path: str | None,
     caption: str,
     hashtags: list[str],
+    *,
+    platform_user_id: str | None = None,
 ) -> tuple[str, str]:
-    """Publica Reel no Instagram via Graph API.
+    """Publica Reel no Instagram via Graph API v19 (Content Publishing).
 
-    Sprint 1: stub.
-    Sprint 3 (proxima): POST https://graph.facebook.com/v19.0/{ig-user-id}/media
-              seguido de POST .../media_publish
+    Fluxo real (nao-stub):
+      1. POST /{ig-user-id}/media  (video_url, media_type=REELS, caption)
+         -> retorna um container_id (processamento assincrono do video)
+      2. Poll GET /{container_id}?fields=status_code ate status FINISHED
+         (ou ERROR / timeout)
+      3. POST /{ig-user-id}/media_publish (creation_id=container_id)
+         -> retorna o media_id publicado
+      4. GET /{media_id}?fields=permalink -> URL publica do post
+
+    Requisitos:
+      - `platform_user_id` deve ser o ID da Instagram Business Account
+        (obtido no callback OAuth /auth/instagram/callback e salvo em
+        SocialAccount.platform_user_id).
+      - `access_token` deve ser o Page Access Token vinculado a essa conta
+        (é o que o callback OAuth armazena criptografado).
+      - `video_path` deve ser uma URL http(s) publicamente acessível (o
+        Graph API busca o arquivo diretamente — não aceita upload direto de
+        bytes neste endpoint). O runner é responsável por resolver o path
+        interno de storage para uma signed URL antes de chamar esta função.
 
     Returns:
-        (external_id, url)
+        (external_id, url) — media_id do post e o permalink público.
+
+    Raises:
+        PublishPlatformError: dados insuficientes ou falha em qualquer etapa
+        da API do Instagram.
     """
-    logger.info("Instagram publish stub | caption=%.60s | hashtags=%s", caption, hashtags)
-    ext_id = f"ig_stub_{uuid.uuid4().hex[:12]}"
-    return ext_id, f"https://www.instagram.com/reel/{ext_id}/"
+    if not platform_user_id:
+        raise PublishPlatformError(
+            "Conta Instagram sem platform_user_id (ID da IG Business Account). "
+            "Reconecte a conta via /auth/instagram/authorize."
+        )
+    if not video_path or not video_path.lower().startswith("http"):
+        raise PublishPlatformError(
+            "URL pública de vídeo indisponível para publicação no Instagram "
+            "(era esperada uma URL http(s) assinada; recebido: "
+            f"{video_path!r})."
+        )
+
+    logger.info(
+        "Instagram publish iniciando | ig_user=%s | caption=%.60s | hashtags=%s",
+        platform_user_id, caption, hashtags,
+    )
+
+    with httpx.Client(timeout=30.0) as client:
+        # ---- 1. Criar container de mídia ----
+        create_resp = client.post(
+            f"{IG_GRAPH_BASE}/{platform_user_id}/media",
+            data={
+                "video_url": video_path,
+                "media_type": "REELS",
+                "caption": caption,
+                "access_token": access_token,
+            },
+        )
+        if create_resp.status_code != 200:
+            logger.error(
+                "Instagram: falha ao criar container de mídia (%d): %s",
+                create_resp.status_code, create_resp.text[:500],
+            )
+            raise PublishPlatformError(
+                f"Instagram: falha ao criar container de mídia "
+                f"({create_resp.status_code}): {create_resp.text[:300]}"
+            )
+
+        container_data = create_resp.json()
+        container_id = container_data.get("id")
+        if not container_id:
+            raise PublishPlatformError(
+                f"Instagram: resposta sem container id: {container_data}"
+            )
+
+        # ---- 2. Poll até o container terminar de processar o vídeo ----
+        status_code = "IN_PROGRESS"
+        status_detail = ""
+        for attempt in range(1, IG_POLL_MAX_ATTEMPTS + 1):
+            time.sleep(IG_POLL_INTERVAL_SECONDS)
+            status_resp = client.get(
+                f"{IG_GRAPH_BASE}/{container_id}",
+                params={"fields": "status_code,status", "access_token": access_token},
+            )
+            if status_resp.status_code != 200:
+                logger.warning(
+                    "Instagram: poll de status falhou (%d/%d, http=%d): %s",
+                    attempt, IG_POLL_MAX_ATTEMPTS, status_resp.status_code,
+                    status_resp.text[:300],
+                )
+                continue
+
+            status_data = status_resp.json()
+            status_code = status_data.get("status_code", "IN_PROGRESS")
+            status_detail = status_data.get("status", "")
+            logger.info(
+                "Instagram container=%s status=%s (%d/%d)",
+                container_id, status_code, attempt, IG_POLL_MAX_ATTEMPTS,
+            )
+
+            if status_code == "FINISHED":
+                break
+            if status_code == "ERROR":
+                raise PublishPlatformError(
+                    f"Instagram: processamento do vídeo falhou (container={container_id}): "
+                    f"{status_detail or status_data}"
+                )
+        else:
+            raise PublishPlatformError(
+                f"Instagram: timeout aguardando processamento do vídeo "
+                f"(container={container_id}, último status={status_code})"
+            )
+
+        # ---- 3. Publicar o container ----
+        publish_resp = client.post(
+            f"{IG_GRAPH_BASE}/{platform_user_id}/media_publish",
+            data={"creation_id": container_id, "access_token": access_token},
+        )
+        if publish_resp.status_code != 200:
+            logger.error(
+                "Instagram: falha ao publicar mídia (%d): %s",
+                publish_resp.status_code, publish_resp.text[:500],
+            )
+            raise PublishPlatformError(
+                f"Instagram: falha ao publicar mídia "
+                f"({publish_resp.status_code}): {publish_resp.text[:300]}"
+            )
+
+        publish_data = publish_resp.json()
+        media_id = publish_data.get("id")
+        if not media_id:
+            raise PublishPlatformError(
+                f"Instagram: publish sem media id: {publish_data}"
+            )
+
+        # ---- 4. Buscar permalink público (best-effort) ----
+        permalink = f"https://www.instagram.com/reel/{media_id}/"
+        try:
+            perma_resp = client.get(
+                f"{IG_GRAPH_BASE}/{media_id}",
+                params={"fields": "permalink", "access_token": access_token},
+            )
+            if perma_resp.status_code == 200:
+                permalink = perma_resp.json().get("permalink", permalink)
+            else:
+                logger.warning(
+                    "Instagram: falha ao buscar permalink (%d): %s — usando fallback",
+                    perma_resp.status_code, perma_resp.text[:200],
+                )
+        except httpx.HTTPError as exc:
+            logger.warning("Instagram: erro ao buscar permalink: %s — usando fallback", exc)
+
+    logger.info(
+        "Instagram publish concluído | media_id=%s | url=%s", media_id, permalink,
+    )
+    return media_id, permalink
 
 
 # ── YouTube ────────────────────────────────────────────────────────────────────
@@ -588,8 +738,12 @@ def publish_to_platform(
     title: str,
     caption: str,
     hashtags: list[str],
+    platform_user_id: str | None = None,
 ) -> tuple[str, str]:
     """Despacha a publicacao para o cliente correto da plataforma.
+
+    `platform_user_id` é usado apenas pelo Instagram (ID da IG Business
+    Account); as demais plataformas ignoram o parâmetro.
 
     Returns:
         (external_id, url)
@@ -599,7 +753,9 @@ def publish_to_platform(
     """
     dispatch = {
         "tiktok": lambda: publish_to_tiktok(access_token, video_path, caption, hashtags),
-        "instagram": lambda: publish_to_instagram(access_token, video_path, caption, hashtags),
+        "instagram": lambda: publish_to_instagram(
+            access_token, video_path, caption, hashtags, platform_user_id=platform_user_id
+        ),
         "youtube": lambda: publish_to_youtube(access_token, video_path, title, caption, hashtags),
         "kwai": lambda: publish_to_kwai(access_token, video_path, caption, hashtags),
     }

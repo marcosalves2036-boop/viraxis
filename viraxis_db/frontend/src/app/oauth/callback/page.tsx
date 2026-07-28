@@ -7,13 +7,15 @@ import { Suspense } from "react";
 const PLATFORM_LABELS: Record<string, string> = {
   youtube: "YouTube",
   tiktok: "TikTok",
-  facebook: "Facebook / Instagram",
+  facebook: "Facebook",
+  instagram: "Instagram",
 };
 
 const PLATFORM_ICONS: Record<string, string> = {
   youtube: "▶️",
   tiktok: "🎵",
   facebook: "📘",
+  instagram: "📸",
 };
 
 function CallbackContent() {

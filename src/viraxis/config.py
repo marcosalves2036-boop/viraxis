@@ -156,6 +156,17 @@ class Settings(BaseSettings):
         default="https://viraxis.onrender.com/auth/meta/callback",
         alias="META_REDIRECT_URI",
     )
+    # Instagram Business (fluxo dedicado - descobre a IG Business Account
+    # vinculada a Page do usuario via Graph API). Usa as mesmas credenciais
+    # do app Meta (META_APP_ID/META_APP_SECRET), mas com redirect_uri e
+    # scopes proprios. IMPORTANTE: esta redirect_uri precisa ser adicionada
+    # em "Valid OAuth Redirect URIs" no Facebook Developer Console antes do
+    # fluxo funcionar em producao (apenas /auth/meta/callback esta
+    # registrada por padrao no app atual).
+    instagram_redirect_uri: str = Field(
+        default="https://viraxis.onrender.com/auth/instagram/callback",
+        alias="INSTAGRAM_REDIRECT_URI",
+    )
 
     # URL base do frontend (para redirects pós-OAuth)
     # ------------------------------------------------------------------ #

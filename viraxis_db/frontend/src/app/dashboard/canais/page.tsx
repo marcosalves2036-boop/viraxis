@@ -55,9 +55,10 @@ const COLOR_CLASSES: Record<string, { bg: string; border: string; text: string; 
 };
 
 const CONNECT_PLATFORMS = [
-  { key: "google",   label: "YouTube",               icon: "▶️", color: "red"   },
-  { key: "tiktok",  label: "TikTok",                 icon: "🎵", color: "pink"  },
-  { key: "meta",    label: "Instagram",                icon: "📸", color: "purple"},
+  { key: "google",     label: "YouTube",   icon: "▶️", color: "red"    },
+  { key: "tiktok",     label: "TikTok",    icon: "🎵", color: "pink"   },
+  { key: "instagram",  label: "Instagram", icon: "📸", color: "purple" },
+  { key: "meta",       label: "Facebook",  icon: "📘", color: "blue"   },
 ];
 
 function CanaisContent() {

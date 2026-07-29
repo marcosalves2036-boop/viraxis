@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from viraxis.api.deps import get_current_user, get_session
+from viraxis.api.utils import parse_uuid as _parse_uuid
 from viraxis.domain.models.content_item import ContentItem, ContentStatus
 from viraxis.domain.models.office import Office
 from viraxis.domain.models.user import User
@@ -189,10 +190,7 @@ async def create_content_item(
 
     decision_uuid: UUID | None = None
     if body.decision_id:
-        try:
-            decision_uuid = UUID(body.decision_id)
-        except ValueError:
-            raise HTTPException(status_code=422, detail="decision_id inválido")
+        decision_uuid = _parse_uuid(body.decision_id, "decision_id")
 
     repo = ContentItemRepository(session)
     item = await repo.create(
@@ -349,7 +347,24 @@ async def _apply_editing_plan_background(item_id: UUID) -> None:
             await session.commit()
             return
 
-        raw_video = await session.get(RawVideo, UUID(str(rv_id)))
+        try:
+            rv_uuid = _parse_uuid(rv_id, "raw_video_id")
+        except HTTPException as e:
+            # Background task — nao ha request para responder, entao converte o
+            # 422 do helper compartilhado no mesmo padrao de erro usado pelo
+            # resto desta funcao (grava o motivo em production_meta e marca
+            # o item como failed em vez de deixar a excecao propagar).
+            logger.error(
+                "editing_plan background: raw_video_id invalido %r (item=%s): %s",
+                rv_id, item_id, e.detail,
+            )
+            item.status = ContentStatus.failed
+            item.production_meta = {**meta, "render_error": str(e.detail), "render_progress": 0, "render_stage": "falhou"}
+            session.add(item)
+            await session.commit()
+            return
+
+        raw_video = await session.get(RawVideo, rv_uuid)
         if not raw_video:
             item.status = ContentStatus.failed
             item.production_meta = {**meta, "render_error": f"RawVideo {rv_id} não encontrado", "render_progress": 0, "render_stage": "falhou"}

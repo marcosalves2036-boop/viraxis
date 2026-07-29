@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from viraxis.api.deps import get_current_user, get_session
+from viraxis.api.utils import parse_uuid as _parse_uuid
 from viraxis.domain.models.social_account import SocialAccount, SocialPlatform
 from viraxis.domain.models.user import User
 from viraxis.domain.models.office import Office
@@ -126,10 +127,7 @@ async def list_social_accounts(
     repo = SocialAccountRepository(session)
 
     if office_id:
-        try:
-            office_uuid = UUID(office_id)
-        except ValueError:
-            raise HTTPException(status_code=422, detail="office_id invalido")
+        office_uuid = _parse_uuid(office_id, "office_id")
 
         office_result = await session.execute(
             select(Office).where(
@@ -193,10 +191,12 @@ async def create_social_account(
         )
 
     # Validar office_id se fornecido
+    body_office_uuid = None
     if body.office_id:
+        body_office_uuid = _parse_uuid(body.office_id, "office_id")
         office_result = await session.execute(
             select(Office).where(
-                Office.id == UUID(body.office_id),
+                Office.id == body_office_uuid,
                 Office.user_id == current_user.id,
             )
         )
@@ -205,7 +205,7 @@ async def create_social_account(
 
     account = SocialAccount(
         user_id=current_user.id,
-        office_id=UUID(body.office_id) if body.office_id else None,
+        office_id=body_office_uuid,
         platform=SocialPlatform(body.platform),
         platform_username=body.platform_username,
         platform_user_id=body.platform_user_id,
@@ -241,15 +241,16 @@ async def assign_account_to_office(
     account = await _get_account_or_404(account_id, current_user.id, session)
 
     if body.office_id:
+        assign_office_uuid = _parse_uuid(body.office_id, "office_id")
         office_result = await session.execute(
             select(Office).where(
-                Office.id == UUID(body.office_id),
+                Office.id == assign_office_uuid,
                 Office.user_id == current_user.id,
             )
         )
         if not office_result.scalar_one_or_none():
             raise HTTPException(status_code=404, detail="Escritório não encontrado")
-        account.office_id = UUID(body.office_id)
+        account.office_id = assign_office_uuid
     else:
         account.office_id = None
 

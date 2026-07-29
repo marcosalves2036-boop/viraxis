@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select as sa_select
 
 from viraxis.api.deps import get_current_user, get_session
+from viraxis.api.utils import parse_uuid as _parse_uuid
 from viraxis.config import settings
 from viraxis.domain.models.office import Office
 from viraxis.domain.models.raw_video import RawVideo, RawVideoStatus
@@ -41,20 +42,6 @@ def _storage_headers() -> dict:
 
 def _storage_base() -> str:
     return f"{settings.supabase_url}/storage/v1"
-
-
-def _parse_uuid(value: str, field_name: str = "id") -> UUID:
-    """Converte string em UUID, retornando 422 legivel em vez de deixar um
-    ValueError nao tratado estourar como 500 generico (bug encontrado em
-    auditoria: office_id malformado derrubava POST /raw-videos/upload-url)."""
-    try:
-        return UUID(value)
-    except (ValueError, AttributeError, TypeError):
-        logger.warning("UUID invalido recebido para %s: %r", field_name, value)
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"{field_name} invalido: deve ser um UUID valido.",
-        )
 
 
 async def _upload_to_supabase(path: str, data: bytes, mime_type: str) -> str:

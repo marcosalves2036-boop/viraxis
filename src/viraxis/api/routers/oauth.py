@@ -14,7 +14,6 @@ import asyncio
 import secrets
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
-from uuid import UUID
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -23,6 +22,7 @@ from jose import JWTError, jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from viraxis.api.deps import get_current_user, get_session
+from viraxis.api.utils import parse_uuid as _parse_uuid
 from viraxis.infrastructure.database.session import AsyncSessionLocal
 from viraxis.config import settings
 from viraxis.domain.models.social_account import SocialAccount, SocialPlatform
@@ -177,7 +177,7 @@ async def google_callback(
 
     repo = SocialAccountRepository(session)
     existing = await repo.get_by_user_platform_username(
-        UUID(user_id), SocialPlatform.youtube, platform_username
+        _parse_uuid(user_id, "user_id"), SocialPlatform.youtube, platform_username
     )
     if existing:
         existing.access_token_enc = access_enc
@@ -185,12 +185,12 @@ async def google_callback(
         existing.token_expires_at = expires_at
         existing.is_active = True
         if office_id:
-            existing.office_id = UUID(office_id)
+            existing.office_id = _parse_uuid(office_id, "office_id")
         await repo.save(existing)
     else:
         account = SocialAccount(
-            user_id=UUID(user_id),
-            office_id=UUID(office_id) if office_id else None,
+            user_id=_parse_uuid(user_id, "user_id"),
+            office_id=_parse_uuid(office_id, "office_id") if office_id else None,
             platform=SocialPlatform.youtube,
             platform_username=platform_username,
             platform_user_id=platform_user_id,
@@ -348,7 +348,7 @@ async def tiktok_callback(
                 async with AsyncSessionLocal() as db_sess:
                     repo = SocialAccountRepository(db_sess)
                     existing = await repo.get_by_user_platform_username(
-                        UUID(user_id), SocialPlatform.tiktok, display_name
+                        _parse_uuid(user_id, "user_id"), SocialPlatform.tiktok, display_name
                     )
                     if existing:
                         existing.access_token_enc = access_enc
@@ -356,12 +356,12 @@ async def tiktok_callback(
                         existing.token_expires_at = expires_at
                         existing.is_active = True
                         if office_id:
-                            existing.office_id = UUID(office_id)
+                            existing.office_id = _parse_uuid(office_id, "office_id")
                         await repo.save(existing)
                     else:
                         account = SocialAccount(
-                            user_id=UUID(user_id),
-                            office_id=UUID(office_id) if office_id else None,
+                            user_id=_parse_uuid(user_id, "user_id"),
+                            office_id=_parse_uuid(office_id, "office_id") if office_id else None,
                             platform=SocialPlatform.tiktok,
                             platform_username=display_name,
                             platform_user_id=open_id,
@@ -603,7 +603,7 @@ async def instagram_callback(
                 async with AsyncSessionLocal() as db_sess:
                     repo = SocialAccountRepository(db_sess)
                     existing = await repo.get_by_user_platform_username(
-                        UUID(user_id), SocialPlatform.instagram, ig_username
+                        _parse_uuid(user_id, "user_id"), SocialPlatform.instagram, ig_username
                     )
                     if existing:
                         existing.access_token_enc = access_enc
@@ -611,12 +611,12 @@ async def instagram_callback(
                         existing.token_expires_at = expires_at
                         existing.is_active = True
                         if office_id:
-                            existing.office_id = UUID(office_id)
+                            existing.office_id = _parse_uuid(office_id, "office_id")
                         await repo.save(existing)
                     else:
                         account = SocialAccount(
-                            user_id=UUID(user_id),
-                            office_id=UUID(office_id) if office_id else None,
+                            user_id=_parse_uuid(user_id, "user_id"),
+                            office_id=_parse_uuid(office_id, "office_id") if office_id else None,
                             platform=SocialPlatform.instagram,
                             platform_username=ig_username,
                             platform_user_id=ig_account_id,
@@ -731,19 +731,19 @@ async def meta_callback(
                 async with AsyncSessionLocal() as db_sess:
                     repo = SocialAccountRepository(db_sess)
                     existing = await repo.get_by_user_platform_username(
-                        UUID(user_id), SocialPlatform.facebook, fb_name
+                        _parse_uuid(user_id, "user_id"), SocialPlatform.facebook, fb_name
                     )
                     if existing:
                         existing.access_token_enc = access_enc
                         existing.token_expires_at = expires_at
                         existing.is_active = True
                         if office_id:
-                            existing.office_id = UUID(office_id)
+                            existing.office_id = _parse_uuid(office_id, "office_id")
                         await repo.save(existing)
                     else:
                         account = SocialAccount(
-                            user_id=UUID(user_id),
-                            office_id=UUID(office_id) if office_id else None,
+                            user_id=_parse_uuid(user_id, "user_id"),
+                            office_id=_parse_uuid(office_id, "office_id") if office_id else None,
                             platform=SocialPlatform.facebook,
                             platform_username=fb_name,
                             platform_user_id=fb_user_id,

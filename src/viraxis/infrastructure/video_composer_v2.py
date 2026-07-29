@@ -234,7 +234,18 @@ def _escape_subtitles_path(path: str) -> str:
 
 
 async def _burn_subtitles(video_path: Path, srt_path: Path, out_path: Path) -> None:
-    """Queima o SRT no vídeo via filtro subtitles (libass)."""
+    """Queima o SRT no vídeo via filtro subtitles (libass).
+
+    Preset "ultrafast" (em vez de "veryfast" usado nos segmentos): este passo
+    decodifica o vídeo concatenado inteiro + libass + reencode, o que sozinho
+    já mede ~260MB de RSS com -threads 1 (medido localmente com
+    /usr/bin/time -v sobre um vídeo de 48s). Trocar para ultrafast derruba
+    esse pico para ~137MB (o preset controla o tamanho do lookahead buffer do
+    x264, que aqui pesa mais que o threading) sem alterar resolução/duração
+    do output — a perda de eficiência de compressão é aceitável porque este
+    é o último passo do pipeline (recompressão sobre vídeo já codificado em
+    "veryfast" nos segmentos, não a fonte de qualidade primária).
+    """
     filt = f"subtitles={_escape_subtitles_path(str(srt_path))}"
     fonts_dir = _fonts_dir()
     if fonts_dir:
@@ -244,7 +255,7 @@ async def _burn_subtitles(video_path: Path, srt_path: Path, out_path: Path) -> N
         "-i", str(video_path),
         "-vf", filt,
         "-c:v", "libx264", "-threads", _FFMPEG_ENCODE_THREADS,
-        "-preset", "veryfast", "-pix_fmt", "yuv420p",
+        "-preset", "ultrafast", "-pix_fmt", "yuv420p",
         "-c:a", "copy",
         str(out_path),
     ])

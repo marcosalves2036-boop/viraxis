@@ -210,7 +210,7 @@ async def apply_editing_plan(
             s, e = keep_segments[0]
             await _run_ffmpeg([
                 "-i", str(input_path), "-ss", f"{s:.3f}", "-to", f"{e:.3f}",
-                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+                "-c:v", "libx264", "-threads", "1", "-preset", "ultrafast", "-crf", "23",
                 "-c:a", "aac", "-pix_fmt", "yuv420p", str(output_path),
             ])
         else:
@@ -220,7 +220,7 @@ async def apply_editing_plan(
                 seg_path = tmp / f"seg_{i}.mp4"
                 await _run_ffmpeg([
                     "-i", str(input_path), "-ss", f"{s:.3f}", "-to", f"{e:.3f}",
-                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+                    "-c:v", "libx264", "-threads", "1", "-preset", "ultrafast", "-crf", "23",
                     "-c:a", "aac", "-pix_fmt", "yuv420p", str(seg_path),
                 ])
                 seg_paths.append(seg_path)

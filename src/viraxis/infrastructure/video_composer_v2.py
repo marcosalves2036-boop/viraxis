@@ -45,6 +45,21 @@ _MIN_SCENE_SEC = 1.2
 _TAIL_PAD_SEC = 0.35          # silêncio no fim da cena p/ não cortar a narração
 _MAX_SUBTITLE_CHARS = 90      # divide narração longa em blocos legíveis
 
+# Threads do encoder libx264 — FIXO EM 1 (não remover).
+# Causa raiz de um bug de produção (2026-07-29): sem "-threads 1", libx264
+# auto-detecta os CPUs disponíveis e aloca buffers de lookahead/motion-search
+# por thread, elevando o RSS do processo ffmpeg para ~290-300MB mesmo em cenas
+# curtas (medido localmente com /usr/bin/time -v). Somado à baseline do
+# processo Python (FastAPI + CrewAI + litellm + SQLAlchemy carregados, também
+# ~150-250MB), isso estourava o limite de 512MB do plano Render free e o
+# kernel matava o processo (OOM kill silencioso — sem exception, sem log,
+# uvicorn reiniciava do zero), deixando o ContentItem preso em
+# status=rendering para sempre. Com "-threads 1" o pico medido cai para
+# ~104-107MB por chamada ffmpeg (~65% de redução), cabendo com folga no
+# free tier. Como o free tier só dá 0.1 vCPU, threads extras não trazem
+# ganho real de velocidade — é redução de memória sem custo de performance.
+_FFMPEG_ENCODE_THREADS = "1"
+
 # Cores da marca Viraxis (fundo sólido: CTA + fallback de cena sem imagem)
 _BRAND_COLORS = ("0x000000", "0x1a0033")  # preto, roxo escuro
 
@@ -129,7 +144,8 @@ async def _ken_burns_segment(img_path: Path, audio_path: Path, seg_dur: float,
         "-i", str(audio_path),
         "-filter_complex", vf,
         "-map", "[v]", "-map", "1:a",
-        "-r", str(_FPS), "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+        "-r", str(_FPS), "-c:v", "libx264", "-threads", _FFMPEG_ENCODE_THREADS,
+        "-preset", "veryfast", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
         str(out_path),
     ])
@@ -141,7 +157,8 @@ async def _solid_segment(color: str, audio_path: Path, seg_dur: float, out_path:
         "-f", "lavfi", "-t", f"{seg_dur:.3f}", "-i", f"color=c={color}:s={_W}x{_H}:r={_FPS}",
         "-i", str(audio_path),
         "-map", "0:v", "-map", "1:a",
-        "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+        "-c:v", "libx264", "-threads", _FFMPEG_ENCODE_THREADS,
+        "-preset", "veryfast", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
         str(out_path),
     ])
@@ -226,7 +243,8 @@ async def _burn_subtitles(video_path: Path, srt_path: Path, out_path: Path) -> N
     await _run_ffmpeg([
         "-i", str(video_path),
         "-vf", filt,
-        "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+        "-c:v", "libx264", "-threads", _FFMPEG_ENCODE_THREADS,
+        "-preset", "veryfast", "-pix_fmt", "yuv420p",
         "-c:a", "copy",
         str(out_path),
     ])

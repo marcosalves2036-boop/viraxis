@@ -1,9 +1,14 @@
 """FastAPI app — VIRAXIS API."""
 
-from fastapi import FastAPI
+import logging
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from viraxis.api.routers import agent_run_logs, analytics, auth, billing, brain, content_items, dev, oauth, offices, raw_videos, social_accounts, users
+
+_error_logger = logging.getLogger("viraxis.errors")
 
 app = FastAPI(
     title="VIRAXIS API",
@@ -12,6 +17,50 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
+
+
+# ── Exception handler global ──────────────────────────────────────────────────
+#
+# Sem isto, qualquer excecao nao tratada em qualquer endpoint (ex: um bug em
+# um router, uma falha de rede inesperada num provider externo, um bug de
+# lógica que a gente nao previu) caia no handler padrao do Starlette, que
+# devolve "Internal Server Error" como TEXTO PURO (nao JSON — quebra clientes
+# que esperam application/json) e SEM NENHUM LOG estruturado — o unico rastro
+# fica no traceback bruto do processo, dificil de correlacionar com a request
+# que o causou. Isto dificultava diagnostico em producao (Render logs viravam
+# um mar de tracebacks sem contexto de qual rota/metodo falhou).
+#
+# Este handler:
+#   1. Loga a excecao completa (stack trace) via logger.exception, prefixada
+#      com metodo+path da request, para ficar facil de achar no Render.
+#   2. Devolve JSON consistente com o resto da API (nunca texto puro), sem
+#      vazar detalhes internos (stack trace, nomes de variaveis, queries SQL)
+#      para o cliente — só o nome da classe da excecao, util para triagem sem
+#      expor superficie de ataque.
+#
+# IMPORTANTE: `@app.exception_handler(Exception)` NAO sobrescreve o tratamento
+# que o FastAPI ja faz para HTTPException/RequestValidationError — o Starlette
+# resolve o handler mais especifico primeiro (percorre o MRO da excecao e usa
+# o handler registrado mais proximo da classe concreta), entao HTTPException
+# levantadas nos routers (404, 422, 401, etc.) continuam respondendo com o
+# status_code e detail originais normalmente. Este handler só é acionado para
+# excecoes que NINGUEM tratou explicitamente.
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    _error_logger.exception(
+        "Excecao nao tratada | %s %s | %s: %s",
+        request.method,
+        request.url.path,
+        type(exc).__name__,
+        exc,
+    )
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "Internal server error",
+            "type": type(exc).__name__,
+        },
+    )
 
 # CORS
 app.add_middleware(

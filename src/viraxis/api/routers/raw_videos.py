@@ -43,6 +43,20 @@ def _storage_base() -> str:
     return f"{settings.supabase_url}/storage/v1"
 
 
+def _parse_uuid(value: str, field_name: str = "id") -> UUID:
+    """Converte string em UUID, retornando 422 legivel em vez de deixar um
+    ValueError nao tratado estourar como 500 generico (bug encontrado em
+    auditoria: office_id malformado derrubava POST /raw-videos/upload-url)."""
+    try:
+        return UUID(value)
+    except (ValueError, AttributeError, TypeError):
+        logger.warning("UUID invalido recebido para %s: %r", field_name, value)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"{field_name} invalido: deve ser um UUID valido.",
+        )
+
+
 async def _upload_to_supabase(path: str, data: bytes, mime_type: str) -> str:
     """Faz upload de bytes para o Supabase Storage e retorna o storage path."""
     import httpx
@@ -166,9 +180,10 @@ async def upload_video(
         )
 
     # Verificar que o office pertence ao usuário
+    office_uuid = _parse_uuid(office_id, "office_id")
     result = await session.execute(
         sa_select(Office).where(
-            Office.id == UUID(office_id),
+            Office.id == office_uuid,
             Office.user_id == current_user.id,
         )
     )
@@ -205,7 +220,7 @@ async def upload_video(
     # Registrar no banco
     repo = RawVideoRepository(session)
     video = await repo.create(
-        office_id=UUID(office_id),
+        office_id=office_uuid,
         user_id=current_user.id,
         original_filename=file.filename or "video",
         r2_key=storage_path,       # reutilizamos o campo r2_key para o storage_path
@@ -276,11 +291,14 @@ async def create_upload_url(
     Fluxo: upload-url → PUT do arquivo na URL → confirm-upload.
     """
     if not _supabase_configured():
+        logger.error("upload-url chamado sem Supabase configurado (SUPABASE_URL/SERVICE_ROLE_KEY ausentes).")
         raise HTTPException(status_code=503, detail="Armazenamento não configurado.")
+
+    office_uuid = _parse_uuid(body.office_id, "office_id")
 
     result = await session.execute(
         sa_select(Office).where(
-            Office.id == UUID(body.office_id),
+            Office.id == office_uuid,
             Office.user_id == current_user.id,
         )
     )
@@ -295,32 +313,72 @@ async def create_upload_url(
 
     import httpx
     sign_url = f"{_storage_base()}/object/upload/sign/{SUPABASE_BUCKET}/{storage_path}"
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.post(sign_url, headers=_storage_headers(), json={})
-        if resp.status_code != 200:
-            logger.error("Supabase signed upload URL error: %s %s", resp.status_code, resp.text)
-            raise HTTPException(status_code=500, detail="Erro ao gerar URL de upload.")
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(sign_url, headers=_storage_headers(), json={})
+    except httpx.TimeoutException as e:
+        logger.error(
+            "Timeout ao contatar Supabase Storage (upload-url) para office_id=%s: %s",
+            body.office_id, e,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="Armazenamento demorou para responder. Tente novamente em instantes.",
+        )
+    except httpx.RequestError as e:
+        # Cobre falhas de DNS/conexão — ex: projeto Supabase pausado por inatividade (INACTIVE),
+        # que resolve DNS como NXDOMAIN e derruba esta chamada antes de qualquer resposta HTTP.
+        logger.error(
+            "Falha de rede ao contatar Supabase Storage (upload-url) para office_id=%s: %s - %s",
+            body.office_id, type(e).__name__, e,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Não foi possível conectar ao armazenamento no momento. Tente novamente em instantes.",
+        )
+
+    if resp.status_code != 200:
+        logger.error(
+            "Supabase signed upload URL error para office_id=%s storage_path=%s: %s %s",
+            body.office_id, storage_path, resp.status_code, resp.text,
+        )
+        raise HTTPException(status_code=502, detail="Erro ao gerar URL de upload no armazenamento.")
+
+    try:
         rel_url = resp.json().get("url", "")
+    except ValueError as e:
+        logger.error("Resposta inválida (não-JSON) do Supabase Storage ao assinar upload: %s - body=%r", e, resp.text)
+        raise HTTPException(status_code=502, detail="Resposta inválida do armazenamento ao gerar URL de upload.")
+
     if not rel_url:
-        raise HTTPException(status_code=500, detail="Supabase não retornou URL de upload.")
+        logger.error("Supabase não retornou 'url' na resposta de sign upload: %r", resp.text)
+        raise HTTPException(status_code=502, detail="Armazenamento não retornou URL de upload.")
     upload_url = rel_url if rel_url.startswith("http") else f"{_storage_base()}{rel_url}"
 
-    repo = RawVideoRepository(session)
-    video = await repo.create(
-        office_id=UUID(body.office_id),
-        user_id=current_user.id,
-        original_filename=body.filename,
-        r2_key=storage_path,
-        r2_url=None,
-        file_size_bytes=body.file_size_bytes,
-        duration_seconds=None,
-        mime_type=mime_type,
-        status=RawVideoStatus.processing,
-        title=None,
-        description=None,
-        tags=[],
-    )
-    await session.commit()
+    try:
+        repo = RawVideoRepository(session)
+        video = await repo.create(
+            office_id=office_uuid,
+            user_id=current_user.id,
+            original_filename=body.filename,
+            r2_key=storage_path,
+            r2_url=None,
+            file_size_bytes=body.file_size_bytes,
+            duration_seconds=None,
+            mime_type=mime_type,
+            status=RawVideoStatus.processing,
+            title=None,
+            description=None,
+            tags=[],
+        )
+        await session.commit()
+    except Exception as e:
+        await session.rollback()
+        logger.exception(
+            "Erro ao registrar raw_video no banco (upload-url) para office_id=%s storage_path=%s: %s",
+            body.office_id, storage_path, e,
+        )
+        raise HTTPException(status_code=500, detail="Erro ao registrar vídeo. Tente novamente.")
 
     return UploadUrlResponse(
         video_id=str(video.id),
@@ -381,9 +439,10 @@ async def list_videos(
     session: AsyncSession = Depends(get_session),
 ):
     """Lista vídeos brutos de um escritório com signed URLs frescas."""
+    office_uuid = _parse_uuid(office_id, "office_id")
     result = await session.execute(
         sa_select(Office).where(
-            Office.id == UUID(office_id),
+            Office.id == office_uuid,
             Office.user_id == current_user.id,
         )
     )
@@ -398,7 +457,7 @@ async def list_videos(
         except ValueError:
             raise HTTPException(status_code=422, detail=f"Status inválido: {status_filter}")
 
-    videos = await repo.list_by_office(UUID(office_id), status=status_enum, limit=limit, offset=offset)
+    videos = await repo.list_by_office(office_uuid, status=status_enum, limit=limit, offset=offset)
 
     # Gerar signed URLs em paralelo (async, 24h de validade)
     import asyncio
@@ -417,7 +476,7 @@ async def get_video(
     session: AsyncSession = Depends(get_session),
 ):
     repo = RawVideoRepository(session)
-    video = await repo.get(UUID(video_id))
+    video = await repo.get(_parse_uuid(video_id, "video_id"))
     if not video or video.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Vídeo não encontrado.")
     signed = await _signed_url(video.r2_key) if (_supabase_configured() and video.r2_key) else None
@@ -432,7 +491,7 @@ async def update_video(
     session: AsyncSession = Depends(get_session),
 ):
     repo = RawVideoRepository(session)
-    video = await repo.get(UUID(video_id))
+    video = await repo.get(_parse_uuid(video_id, "video_id"))
     if not video or video.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Vídeo não encontrado.")
 
@@ -463,7 +522,7 @@ async def delete_video(
     session: AsyncSession = Depends(get_session),
 ):
     repo = RawVideoRepository(session)
-    video = await repo.get(UUID(video_id))
+    video = await repo.get(_parse_uuid(video_id, "video_id"))
     if not video or video.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Vídeo não encontrado.")
 

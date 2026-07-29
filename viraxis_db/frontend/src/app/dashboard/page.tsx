@@ -85,7 +85,7 @@ export default function DashboardPage() {
             <QuickAction icon="🏢" label="Criar Escritório Viral" href="/dashboard/escritorios/novo" desc="Configure um novo escritório autônomo de conteúdo" />
           )}
           <QuickAction icon="📹" label="Ver Conteúdos Gerados" href="/dashboard/conteudo" desc="Revise e publique o conteúdo criado pelos agentes" />
-          <QuickAction icon="📊" label="Analíticos" href="/dashboard/analiticos" desc="Acompanhe o desempenho dos seus conteúdos" />
+          <QuickAction icon="📈" label="Analytics" href="/dashboard/analytics" desc="Acompanhe o desempenho dos seus conteúdos e decisões editoriais" />
           <QuickAction icon="⚙️" label="Configurações" href="/dashboard/configuracoes" desc="Gerencie sua conta e integrações" />
         </div>
       </div>

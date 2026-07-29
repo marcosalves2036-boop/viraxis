@@ -1,0 +1,56 @@
+name: Keep-alive Render + Supabase
+
+# Evita que o backend Render (free tier) durma por inatividade (~cold start de
+# 42s) e que o projeto Supabase (free tier) seja pausado por inatividade
+# (o que derruba o Storage com DNS NXDOMAIN ate restauracao manual).
+# Roda a cada 10 minutos fazendo requisicoes leves de "ping" nos dois servicos.
+#
+# Nota: a chave usada abaixo e a Supabase "anon key" (role=anon), publica por
+# design (protegida por RLS no banco) — e a mesma chave ja embutida no bundle
+# do frontend. Nao usar a service_role key aqui.
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+env:
+  SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR4aXhzbGloc2Fkb2pocWhjbHByIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE4MTg0MDQsImV4cCI6MjA5NzM5NDQwNH0.VwtlFRmOz11mZBGe6iEnuUt5nC3KoLEfJGRUCBixXbg"
+
+jobs:
+  keepalive:
+    name: Ping Render + Supabase
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Render (/health)
+        run: |
+          echo "Chamando https://viraxis.onrender.com/health ..."
+          HTTP_CODE=$(curl -s -o /tmp/render_health.json -w "%{http_code}" \
+            --max-time 60 \
+            "https://viraxis.onrender.com/health")
+          echo "HTTP status: $HTTP_CODE"
+          cat /tmp/render_health.json || true
+          echo ""
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 500 ]; then
+            echo "::warning::Render /health respondeu HTTP $HTTP_CODE"
+          fi
+
+      - name: Ping Supabase REST API
+        run: |
+          echo "Chamando https://txixslihsadojhqhclpr.supabase.co/rest/v1/ ..."
+          HTTP_CODE=$(curl -s -o /tmp/supabase_ping.json -w "%{http_code}" \
+            --max-time 60 \
+            "https://txixslihsadojhqhclpr.supabase.co/rest/v1/" \
+            -H "apikey: $SUPABASE_ANON_KEY" \
+            -H "Authorization: Bearer $SUPABASE_ANON_KEY")
+          echo "HTTP status: $HTTP_CODE"
+          cat /tmp/supabase_ping.json || true
+          echo ""
+          # 200 = OK. 404 tambem e aceitavel aqui (raiz do PostgREST sem rota
+          # explicita ainda responde e mantem o projeto ativo). O que importa
+          # e que NAO seja erro de rede/DNS (curl retornaria HTTP_CODE=000)
+          # ou 5xx, que indicariam o projeto pausado/inacessivel.
+          if [ "$HTTP_CODE" = "000" ] || [ "$HTTP_CODE" -ge 500 ]; then
+            echo "::warning::Supabase REST respondeu HTTP $HTTP_CODE - projeto pode estar pausado/inacessivel"
+            exit 1
+          fi

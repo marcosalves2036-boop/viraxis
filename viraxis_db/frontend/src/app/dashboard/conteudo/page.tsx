@@ -607,6 +607,7 @@ function ConteudoInner() {
           itemId={publishItem.id}
           officeId={publishItem.office_id ?? ""}
           itemTitle={publishItem.title}
+          productionMeta={publishItem.production_meta}
           onClose={() => setPublishItem(null)}
           onPublished={status => updateItem(publishItem.id, { status })}
         />

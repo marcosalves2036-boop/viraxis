@@ -493,6 +493,7 @@ export default function ContentDetailPage() {
           itemId={item.id}
           officeId={officeId}
           itemTitle={item.title}
+          productionMeta={item.production_meta}
           onClose={() => setShowPublish(false)}
           onPublished={status => setItem(prev => prev ? { ...prev, status } : prev)}
         />

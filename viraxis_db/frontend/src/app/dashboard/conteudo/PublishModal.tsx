@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 export type Platform = "tiktok" | "instagram" | "youtube";
 
@@ -9,6 +9,13 @@ const PLATFORMS: { id: Platform; label: string; icon: string }[] = [
   { id: "instagram", label: "Instagram", icon: "📸" },
   { id: "youtube", label: "YouTube", icon: "▶️" },
 ];
+
+// Limites conhecidos de legenda por plataforma (caracteres).
+const CAPTION_LIMITS: Record<Platform, number> = {
+  tiktok: 2200,
+  instagram: 2200,
+  youtube: 5000,
+};
 
 interface SocialAccount {
   id: string;
@@ -25,18 +32,43 @@ interface PublishResponse {
   message: string;
 }
 
+// Subconjunto de ProductionMeta relevante para sugerir uma legenda default.
+// Tipado à parte para não acoplar este componente ao shape completo usado nas páginas.
+export interface PublishProductionMeta {
+  roteiro?: { hook?: string; cta?: string };
+  seo?: { descricao?: string; hashtags?: string[] };
+}
+
 interface PublishModalProps {
   itemId: string;
   officeId: string;
   itemTitle: string;
+  productionMeta?: PublishProductionMeta;
   onClose: () => void;
   onPublished: (newStatus: string) => void;
 }
 
-export function PublishModal({ itemId, officeId, itemTitle, onClose, onPublished }: PublishModalProps) {
+function buildDefaultCaption(title: string, meta?: PublishProductionMeta): string {
+  if (meta?.seo?.descricao) {
+    const hashtags = (meta.seo.hashtags ?? [])
+      .filter(Boolean)
+      .map(h => (h.startsWith("#") ? h : `#${h}`))
+      .join(" ");
+    return hashtags ? `${meta.seo.descricao}\n\n${hashtags}` : meta.seo.descricao;
+  }
+  if (meta?.roteiro?.hook) {
+    const cta = meta.roteiro.cta ? `\n\n${meta.roteiro.cta}` : "";
+    return `${meta.roteiro.hook}${cta}`;
+  }
+  return title;
+}
+
+export function PublishModal({ itemId, officeId, itemTitle, productionMeta, onClose, onPublished }: PublishModalProps) {
   const [selected, setSelected] = useState<Platform | null>(null);
   const [accountsByPlatform, setAccountsByPlatform] = useState<Record<string, SocialAccount[]>>({});
   const [loadingAccounts, setLoadingAccounts] = useState(true);
+  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
+  const [caption, setCaption] = useState(() => buildDefaultCaption(itemTitle, productionMeta));
   const [publishing, setPublishing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
@@ -69,22 +101,59 @@ export function PublishModal({ itemId, officeId, itemTitle, onClose, onPublished
     return () => { cancelled = true; };
   }, [officeId]);
 
+  // Sempre que a plataforma selecionada mudar (ou as contas terminarem de carregar),
+  // seleciona a primeira conta disponível por padrão.
+  useEffect(() => {
+    if (!selected) {
+      setSelectedAccountId(null);
+      return;
+    }
+    const accounts = accountsByPlatform[selected] ?? [];
+    setSelectedAccountId(accounts[0]?.id ?? null);
+  }, [selected, accountsByPlatform]);
+
+  const selectedAccounts = selected ? accountsByPlatform[selected] ?? [] : [];
+  const selectedHasAccount = selectedAccounts.length > 0;
+  const showAccountPicker = selectedAccounts.length > 1;
+
+  const captionLimit = selected ? CAPTION_LIMITS[selected] : null;
+  const captionLength = caption.length;
+  const captionOverLimit = captionLimit != null && captionLength > captionLimit;
+
+  const errorFromLimit = useMemo(() => {
+    if (captionOverLimit && captionLimit != null && selected) {
+      const platformLabel = PLATFORMS.find(p => p.id === selected)?.label ?? selected;
+      return `A legenda excede o limite de ${captionLimit} caracteres do ${platformLabel}.`;
+    }
+    return null;
+  }, [captionOverLimit, captionLimit, selected]);
+
   async function handleConfirm() {
     if (!selected || publishing) return;
-    const accounts = accountsByPlatform[selected];
-    if (!accounts || accounts.length === 0) {
+    if (!selectedAccountId) {
       setError(`Conecte sua conta do ${selected} antes de publicar.`);
+      return;
+    }
+    if (captionOverLimit) {
+      setError(errorFromLimit);
       return;
     }
     setPublishing(true);
     setError(null);
     try {
-      const account = accounts[0];
+      const trimmedCaption = caption.trim();
       const r = await fetch(`/api/offices/${officeId}/content-items/${itemId}/publish`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          targets: [{ platform: selected, social_account_id: account.id }],
+          targets: [
+            {
+              platform: selected,
+              social_account_id: selectedAccountId,
+              caption: trimmedCaption.length > 0 ? trimmedCaption : null,
+              hashtags: [],
+            },
+          ],
         }),
       });
       const body = await r.json().catch(() => ({}));
@@ -111,13 +180,11 @@ export function PublishModal({ itemId, officeId, itemTitle, onClose, onPublished
     }
   }
 
-  const selectedHasAccount = selected ? (accountsByPlatform[selected]?.length ?? 0) > 0 : false;
-
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" onClick={onClose}>
       <div className="absolute inset-0 bg-black/75 backdrop-blur-sm" />
       <div
-        className="relative w-full max-w-sm rounded-2xl border p-6"
+        className="relative w-full max-w-sm rounded-2xl border p-6 max-h-[90vh] overflow-y-auto"
         style={{ background: "rgba(8,9,16,0.99)", borderColor: "rgba(255,255,255,0.08)" }}
         onClick={e => e.stopPropagation()}
       >
@@ -181,6 +248,63 @@ export function PublishModal({ itemId, officeId, itemTitle, onClose, onPublished
               </div>
             )}
 
+            {!loadingAccounts && showAccountPicker && (
+              <div className="mb-4">
+                <p className="text-white/40 text-xs font-semibold uppercase tracking-wider mb-2">
+                  Qual conta do {PLATFORMS.find(p => p.id === selected)?.label}?
+                </p>
+                <div className="flex flex-col gap-1.5">
+                  {selectedAccounts.map(acc => (
+                    <label
+                      key={acc.id}
+                      className={`flex items-center gap-2 py-2 px-3 rounded-xl border text-xs cursor-pointer transition-colors ${
+                        selectedAccountId === acc.id
+                          ? "bg-violet-600/20 border-violet-500/50 text-violet-200"
+                          : "bg-white/[0.04] border-white/10 text-white/60 hover:border-white/20"
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="publish-account"
+                        value={acc.id}
+                        checked={selectedAccountId === acc.id}
+                        onChange={() => setSelectedAccountId(acc.id)}
+                        disabled={publishing}
+                        className="accent-violet-500"
+                      />
+                      <span className="truncate">@{acc.platform_username}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {!loadingAccounts && selected && selectedHasAccount && (
+              <div className="mb-4">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-white/40 text-xs font-semibold uppercase tracking-wider">Legenda / hashtags</p>
+                  {captionLimit != null && (
+                    <span className={`text-[10px] font-medium ${captionOverLimit ? "text-red-400" : "text-white/30"}`}>
+                      {captionLength}/{captionLimit}
+                    </span>
+                  )}
+                </div>
+                <textarea
+                  value={caption}
+                  onChange={e => setCaption(e.target.value)}
+                  disabled={publishing}
+                  rows={4}
+                  placeholder="Escreva a legenda e hashtags para este post…"
+                  className={`w-full resize-none rounded-xl border bg-white/[0.04] px-3 py-2 text-xs text-white/80 placeholder:text-white/25 outline-none transition-colors focus:border-violet-500/50 disabled:opacity-50 ${
+                    captionOverLimit ? "border-red-500/50" : "border-white/10"
+                  }`}
+                />
+                {captionOverLimit && (
+                  <p className="text-red-400 text-[10px] mt-1">{errorFromLimit}</p>
+                )}
+              </div>
+            )}
+
             {error && (
               <div className="mb-4 p-3 rounded-xl border border-red-500/20 bg-red-500/5">
                 <p className="text-red-400 text-xs leading-relaxed">❌ {error}</p>
@@ -189,7 +313,7 @@ export function PublishModal({ itemId, officeId, itemTitle, onClose, onPublished
 
             <button
               onClick={handleConfirm}
-              disabled={!selected || !selectedHasAccount || publishing || loadingAccounts}
+              disabled={!selected || !selectedHasAccount || !selectedAccountId || captionOverLimit || publishing || loadingAccounts}
               className="w-full py-2.5 bg-violet-600 hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-bold rounded-xl transition-colors"
             >
               {publishing ? "⚙️ Publicando…" : "Confirmar publicação"}

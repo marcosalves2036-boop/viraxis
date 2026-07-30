@@ -597,58 +597,6 @@ async def update_decision_status(
     return _decision_to_response(decision)
 
 
-# ── Endpoints: RENDERER ────────────────────────────────────────────────────────
-
-class RenderResponse(BaseModel):
-    content_item_id: str
-    title: str
-    duration_seconds: float | None
-    status: str
-    message: str
-
-
-@router.post(
-    "/{office_id}/decisions/{decision_id}/render",
-    response_model=RenderResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-async def render_decision(
-    office_id: UUID,
-    decision_id: UUID,
-    current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-):
-    """Executa o agente RENDERER para gerar roteiro a partir de uma decisão do BRAIN.
-
-    Cria um ContentItem com script completo (status=draft) e avança a decisão
-    para status=executing.
-
-    Sprint 1: execução síncrona.
-    Sprint 3: migra para Celery com retorno {task_id, status: 'queued'}.
-    """
-    await _get_office_or_404(office_id, current_user.id, session)
-
-    try:
-        from viraxis.agents.renderer.runner import run_renderer
-        content_item = await run_renderer(
-            office_id, current_user.id, decision_id
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro ao renderizar roteiro: {e}")
-
-    return RenderResponse(
-        content_item_id=str(content_item.id),
-        title=content_item.title,
-        duration_seconds=content_item.duration_seconds,
-        status=content_item.status.value,
-        message="Roteiro gerado com sucesso. ContentItem criado com status=draft.",
-    )
-
-
 # ── Endpoints: Progresso do RENDERER ──────────────────────────────────────────
 
 class RenderProgressResponse(BaseModel):

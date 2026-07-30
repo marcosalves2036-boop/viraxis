@@ -15,7 +15,7 @@ on:
   workflow_dispatch: {}
 
 env:
-  SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR4aXhzbGloc2Fkb2pocWhjbHByIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE4MTg0MDQsImV4cCI6MjA5NzM5NDQwNH0.VwtlFRmOz11mZBGe6iEnuUt5nC3KoLEfJGRUCBixXbg"
+  SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
 
 jobs:
   keepalive:

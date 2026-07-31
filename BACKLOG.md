@@ -4,8 +4,12 @@
 > Marcos pode adicionar tasks em qualquer seção. Agentes leem e atualizam este arquivo a cada ciclo.
 > Formato: `- [ ] [AGENTE] Descrição | prioridade: P0/P1/P2 | adicionado: YYYY-MM-DD | fonte: quem adicionou`
 >
-> **Última curação do Planejador: 2026-07-30.** Fase 2 está tecnicamente entregue — os 2 P0 restantes são
-> ações humanas do Marcos, não código. O foco do ciclo passa a ser **hardening de produção + início da Fase 3**.
+> **Última curação do Planejador: 2026-07-30 (2ª passagem).** Fase 2 está tecnicamente entregue — os 2 P0
+> restantes são ações humanas do Marcos, não código. O foco do ciclo é **hardening de produção + início da Fase 3**.
+>
+> **SCOUT 2026-07-30 (últimas 100 linhas de log do Render, janela 2026-07-30T02:13 → 2026-07-31T01:25):**
+> zero `error` / `exception` / `traceback` / `5xx`. Deploy `live` no commit `c761744`. Os únicos 404 são
+> `GET|HEAD /` — sondas internas do Render na raiz (a API não expõe `/`), não é bug. **Nenhum P0 novo.**
 
 ---
 
@@ -26,6 +30,10 @@
 > porque a seção P1 estava vazia e o executor pediu confirmação em vez de cair para P2 (regra 2 do
 > AGENT_CONFIG). Estes itens existem para que isso não se repita.
 
+### Infra do sistema de agentes (BLOQUEIA OS PRÓXIMOS CICLOS)
+
+- [ ] [DEV1] **Versionar o vault e o sistema de agentes no repo — TASK DE MAIOR PRIORIDADE DO CICLO.** `vault/`, `SISTEMA/` e `RELATORIOS/` existem só em `C:\Users\Marcos\Claude\Projects\SAAS - Escritorio virtual\` e **não estão no git**. Isso já quebrou o sistema na prática: o Planejador de 2026-07-30 clonou o repo e não achou `vault/00-index.md`, `vault/03-fases/fase-2-spec.md`, `SISTEMA/AGENT_CONFIG.md` nem `RELATORIOS/` — teve que ler tudo do disco local do Marcos. Qualquer agente que só clone o repo (Claude Code CMD, Codespaces, CI) opera cego, e `CLAUDE.md` aponta para `@vault/00-index.md`, um link morto no repo. Toda a memória institucional (ADRs, specs de fase, marca, relatórios de ciclo, pesquisa de competidores) está sem backup e sem histórico. Commitar essas pastas (excluindo `reference_all_credentials.md` e qualquer segredo) e alinhar `CLAUDE.md`. | prioridade: P1 | adicionado: 2026-07-30 | fonte: planejador | **elevada a topo de P1 em 2026-07-30 (2ª passagem) — falha reproduzida no próprio ciclo**
+
 ### Hardening de produção (risco real)
 
 - [ ] [DAVI] **Rate limiting na API** — nenhum endpoint tem limite hoje (`grep slowapi|limiter` em `src/` = 0 resultados). Proteger prioritariamente `/brain/*`, `/renderer`, `/content-items/*/process-video` e `/raw-videos/upload-url`, que disparam custo real de LLM/Gemini/FFmpeg. Sugestão: `slowapi` com limite por `user_id` (não por IP — multi-tenant), resposta 429 com `Retry-After`. Incluir teste que prove o 429. | prioridade: P1 | adicionado: 2026-07-27 | fonte: sistema | promovido: 2026-07-30
@@ -36,7 +44,9 @@
 
 ### Produto
 
-- [ ] [ARTHUR] **Retry na UI para RawVideo com `status=failed`** — hoje um vídeo que falha na análise fica morto na Biblioteca e o usuário precisa re-uploadar. Adicionar botão "Tentar novamente" que re-dispara a análise sem novo upload, com estados de loading/erro. Requer endpoint de re-trigger — se não existir, anotar dependência `[DAVI] POST /raw-videos/{id}/reanalyze` e implementar em conjunto. Persistir também o tipo de erro (`download_failed`, `timeout`, `analysis_failed`) para permitir retry automático futuro. | prioridade: P1 | adicionado: 2026-07-28 | fonte: kevin+arthur | promovido: 2026-07-30
+- [ ] [DAVI] **`POST /raw-videos/{id}/reanalyze`** — endpoint que re-dispara a análise de um `RawVideo` com `status=failed` sem exigir novo upload (reusa o arquivo já no Storage; valida `office_id`+`user_id`; recusa se `status != failed`; volta para `status=processing` e enfileira a análise em BackgroundTask). Persistir também o tipo de erro (`download_failed`, `timeout`, `analysis_failed`) em `RawVideo` para permitir retry automático futuro. **Dependência de bloqueio da task [ARTHUR] de retry na UI — fazer primeiro.** | prioridade: P1 | adicionado: 2026-07-30 | fonte: planejador (extraído da task do Arthur)
+
+- [ ] [ARTHUR] **Retry na UI para RawVideo com `status=failed`** — hoje um vídeo que falha na análise fica morto na Biblioteca e o usuário precisa re-uploadar. Adicionar botão "Tentar novamente" que re-dispara a análise sem novo upload, com estados de loading/erro. **DEPENDE de `[DAVI] POST /raw-videos/{id}/reanalyze` (P1, mesma seção Produto) — não começar antes dele estar em main.** | prioridade: P1 | adicionado: 2026-07-28 | fonte: kevin+arthur | promovido: 2026-07-30
 
 - [ ] [KEVIN] **Notificação por email quando `ContentItem.status` → `ready`** — usar Resend (credencial já presente nos env vars do Render). Enviar ao dono do escritório com link direto para `/dashboard/conteudo/{id}`. Incluir opt-out por usuário e não enviar em modo dry-run/dev. É o primeiro loop de retenção do produto: hoje o usuário só descobre que o vídeo ficou pronto se voltar ao dashboard. | prioridade: P1 | adicionado: 2026-07-28 | fonte: sistema | promovido: 2026-07-30
 
@@ -45,12 +55,6 @@
 ### Estratégia / Fase 3
 
 - [ ] [DEV1] **Escrever `vault/03-fases/fase-3-spec.md`** — a Fase 2 está declarada tecnicamente entregue e não existe spec da Fase 3; sem ela o sistema autônomo fica sem norte estratégico e o backlog vira só manutenção. Basear em: (a) itens fora de escopo da Fase 2 (Billing/Stripe — necessário porque a landing já anuncia preços), (b) a DÚVIDA aberta em `fase-2-spec.md` sobre evoluir o BRAIN de agente único para crew de 3 (Trend Researcher → Clip Curator → Hook Writer), (c) YouTube Shorts como 3ª plataforma de publicação, (d) o Niche Memory DB como moat (ADR-002). Definir critério de pronto mensurável. | prioridade: P1 | adicionado: 2026-07-30 | fonte: planejador
-
-- [ ] [INTEL] **Pesquisar 3 competidores diretos** (automação de vídeo para criadores BR — OpusClip, Submagic, Klap, Pictory). Para cada um: preço em BRL, proposta de valor, pontos fracos visíveis, o que fazem melhor que a Viraxis hoje. Usar WebSearch/WebFetch com dados reais e fontes citadas — não inventar números. Salvar em `vault/04-inteligencia/competidores-2026-07.md`. Pedido direto do Marcos, aberto desde 2026-07-29 sem execução. | prioridade: P1 | adicionado: 2026-07-29 | fonte: marcos | promovido: 2026-07-30
-
-### Infra do sistema de agentes
-
-- [ ] [DEV1] **Versionar o vault e o sistema de agentes no repo** — `vault/`, `BACKLOG.md`, `SISTEMA/` e `RELATORIOS/` existem só em `C:\Users\Marcos\Claude\Projects\SAAS - Escritorio virtual\` e **não estão no git**. Toda a memória institucional (ADRs, specs de fase, marca, relatórios de ciclo) está sem backup e sem histórico. `CLAUDE.md` no repo aponta para `@vault/00-index.md`, que não existe lá — o link está quebrado para qualquer agente que só clone o repo. Commitar essas pastas (excluindo credenciais) e alinhar `CLAUDE.md`. | prioridade: P1 | adicionado: 2026-07-30 | fonte: planejador
 
 ---
 
@@ -100,6 +104,7 @@
 
 ## ✅ Concluído
 
+- [x] [INTEL] Pesquisa de 3 competidores diretos (OpusClip, Submagic, Klap) — `vault/04-inteligencia/competidores-2026-07.md`, 67 linhas, 11 fontes reais citadas (pricing pages + Trustpilot + análise de PT-BR). **Entregue no vault local, ainda NÃO versionado no git** — depende do P1 de versionar o vault para deixar de ser um arquivo sem backup. | concluído: 2026-07-29
 - [x] [KEVIN] Remover endpoint legado `POST /offices/{id}/decisions/{id}/render` — 52 linhas removidas de `offices.py`; `run_renderer()` mantido por precaução (ver P2 de follow-up). Commit `c761744`, deploy Render `live` em 2026-07-30T02:14. | concluído: 2026-07-29
 - [x] [DAVI] Mover a anon key do `.github/workflows/keepalive.yml` para GitHub Secret (`SUPABASE_ANON_KEY`) + criar `scripts/cleanup_test_users.py` (194 linhas). Commit `3afd8df`. | concluído: 2026-07-29
 - [x] [ARTHUR] Publisher UI — seletor de conta quando há múltiplas contas conectadas à mesma plataforma. Commit `e3dfaed` (`PublishModal.tsx` +136). | concluído: 2026-07-29

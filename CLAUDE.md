@@ -8,7 +8,7 @@ Plataforma autônoma de produção de conteúdo viral. O sistema usa agentes de 
 - **Agentes**: CrewAI com LiteLLM (Groq/OpenAI/Gemini via `LLM_MODEL` env var)
 - **Queue**: Celery + Redis (worker + beat)
 - **Auth**: JWT (python-jose) + bcrypt
-- **Storage**: Cloudflare R2 (opcional no dev)
+- **Storage**: Supabase Storage (bucket `biblioteca-videos`; ver `config.py`, `api/routers/raw_videos.py`, `infrastructure/video_processor.py`). Os campos `r2_*` em `config.py` são resíduo de uma integração Cloudflare R2 nunca usada em produção — não usar.
 - **Billing**: Stripe (checkout, portal, webhook)
 - **Infra**: Docker Compose, GitHub Actions CI/CD
 
@@ -115,13 +115,13 @@ Rodar com: `alembic upgrade head`
 
 ## Status do projeto
 
-**Sprint 1 Fase 2 — COMPLETO** (todos os 8 PRs merged em main)
+**Fase 2 entregue em produção**: frontend Next.js (`viraxis_db/frontend/`), publicação real TikTok e Instagram/Meta (Graph API v19), dashboard de analytics (`/dashboard/analytics`), pipeline end-to-end (upload → SCOUT → BRAIN → RENDERER → FFmpeg → ready) validado em produção, testes automatizados (pytest + httpx, ver `tests/`).
 
-Próximos passos (Sprint 2):
-- Frontend Next.js / React
-- Integrações reais de publicação (TikTok API, Instagram Graph API)
-- Dashboard de analytics
-- Testes automatizados (pytest + httpx)
+Pendente:
+- Publish real ainda bloqueado por 2 ações manuais: aprovação/audit do app TikTok e registro do redirect URI do Instagram no Meta App Dashboard
+- Cobertura de teste do caminho crítico (BRAIN/RENDERER/scene_extractor/video_composer) — hoje a suite cobre só auth e validação de UUID
+- Rate limiting na API
+- Tutorial de onboarding travado (gate de primeiro uso)
 
 ## Como rodar localmente (Codespaces ou Docker)
 

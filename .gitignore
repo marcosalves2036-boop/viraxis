@@ -25,3 +25,16 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# Governanca do repo (decisao 2026-07-30): este repo guarda so codigo do
+# produto. Docs de gestao interna, backlog e scripts pessoais vivem no
+# workspace local do dono do projeto, nao aqui. Nao remover estas linhas
+# nem commitar estes caminhos de volta.
+BACKLOG.md
+/docs/
+/marketing/
+WORKFLOW_GIT.md
+check_db.py
+setup_vm.sh
+test_e2e.py
+test_register.py

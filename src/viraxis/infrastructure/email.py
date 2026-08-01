@@ -128,3 +128,61 @@ async def send_password_reset_email(to: str, full_name: str, token: str) -> bool
 </html>
 """
     return await _send(to, "Redefinição de senha — Viraxis", html)
+
+
+async def send_content_ready_email(
+    to: str, full_name: str, content_title: str, content_url: str
+) -> bool:
+    """Envia email avisando que um ContentItem terminou de ser produzido
+    (status=ready) e já pode ser revisado/publicado pelo dono do escritório.
+
+    Primeiro loop de retenção do produto — sem este email o usuário só
+    descobre que o vídeo ficou pronto voltando manualmente ao dashboard.
+    """
+    safe_title = (content_title or "Seu vídeo").strip() or "Seu vídeo"
+    html = f"""
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#0f0f0f;font-family:'Segoe UI',Arial,sans-serif">
+  <table width="100%" cellpadding="0" cellspacing="0">
+    <tr><td align="center" style="padding:40px 16px">
+      <table width="560" cellpadding="0" cellspacing="0" style="background:#1a1a1a;border-radius:12px;overflow:hidden">
+        <!-- Header -->
+        <tr><td style="background:linear-gradient(135deg,#6366f1,#8b5cf6);padding:32px;text-align:center">
+          <h1 style="color:#fff;margin:0;font-size:28px;font-weight:700;letter-spacing:-0.5px">Viraxis</h1>
+          <p style="color:#c4b5fd;margin:8px 0 0;font-size:14px">Plataforma de Conteúdo com IA</p>
+        </td></tr>
+        <!-- Body -->
+        <tr><td style="padding:40px 32px">
+          <h2 style="color:#f5f5f5;margin:0 0 16px;font-size:20px">Olá, {full_name}! 🎬</h2>
+          <p style="color:#a3a3a3;margin:0 0 24px;line-height:1.6;font-size:15px">
+            Seu vídeo <strong style="color:#e5e5e5">"{safe_title}"</strong> ficou pronto
+            e já está disponível para revisão e publicação.
+          </p>
+          <div style="text-align:center;margin:32px 0">
+            <a href="{content_url}"
+               style="display:inline-block;background:linear-gradient(135deg,#6366f1,#8b5cf6);
+                      color:#fff;text-decoration:none;padding:14px 36px;border-radius:8px;
+                      font-weight:600;font-size:15px;letter-spacing:0.3px">
+              Ver conteúdo
+            </a>
+          </div>
+          <p style="color:#737373;font-size:13px;margin:24px 0 0;line-height:1.5">
+            Você pode desativar este tipo de notificação a qualquer momento nas
+            configurações da sua conta.
+          </p>
+        </td></tr>
+        <!-- Footer -->
+        <tr><td style="padding:20px 32px;border-top:1px solid #2a2a2a;text-align:center">
+          <p style="color:#525252;font-size:12px;margin:0">
+            © 2026 Viraxis · Todos os direitos reservados
+          </p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
+"""
+    return await _send(to, f'Seu vídeo "{safe_title}" está pronto — Viraxis', html)

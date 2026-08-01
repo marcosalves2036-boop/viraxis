@@ -222,13 +222,19 @@ async def update_content_item_status(
     repo = ContentItemRepository(session)
     item = await _get_item_or_404(repo, item_id, office_id)
 
+    new_status = ContentStatus(body.status)
     try:
-        item = await repo.update_status(item, ContentStatus(body.status))
+        item = await repo.update_status(item, new_status)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
     await session.commit()
     await session.refresh(item)
+
+    if new_status == ContentStatus.ready:
+        from viraxis.infrastructure.notifications import notify_content_ready
+        await notify_content_ready(session, item)
+
     return _to_detail(item)
 
 
@@ -410,6 +416,9 @@ async def _apply_editing_plan_background(item_id: UUID) -> None:
             await session.commit()
             logger.info("editing_plan background OK | item=%s", item_id)
 
+            from viraxis.infrastructure.notifications import notify_content_ready
+            await notify_content_ready(session, item)
+
 
 async def _compose_ai_video_v2_background(item_id) -> None:
     """Roda compose_ai_video_v2 fora da request; atualiza status/progresso no DB.
@@ -451,7 +460,10 @@ async def _compose_ai_video_v2_background(item_id) -> None:
             }
             s.add(item)
             await s.commit()
-        logger.info("compose v2 bg: OK | item=%s | path=%s", item_id, dest_path)
+            logger.info("compose v2 bg: OK | item=%s | path=%s", item_id, dest_path)
+
+            from viraxis.infrastructure.notifications import notify_content_ready
+            await notify_content_ready(s, item)
 
     except Exception as e:  # noqa: BLE001 — background nunca deve derrubar o worker
         import traceback

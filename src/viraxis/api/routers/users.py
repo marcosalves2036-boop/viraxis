@@ -12,7 +12,8 @@ router = APIRouter(prefix="/users", tags=["users"])
 
 
 class UpdateProfileRequest(BaseModel):
-    full_name: str
+    full_name: str | None = None
+    notify_content_ready: bool | None = None
 
 
 class ChangePasswordRequest(BaseModel):
@@ -26,19 +27,25 @@ class UserResponse(BaseModel):
     full_name: str
     plan: str
     role: str
+    notify_content_ready: bool
 
     model_config = {"from_attributes": True}
 
 
+def _to_user_response(user: User) -> UserResponse:
+    return UserResponse(
+        id=str(user.id),
+        email=user.email,
+        full_name=user.full_name,
+        plan=user.plan.value,
+        role=user.role.value,
+        notify_content_ready=user.notify_content_ready,
+    )
+
+
 @router.get("/me", response_model=UserResponse)
 async def get_me(current_user: User = Depends(get_current_user)):
-    return UserResponse(
-        id=str(current_user.id),
-        email=current_user.email,
-        full_name=current_user.full_name,
-        plan=current_user.plan.value,
-        role=current_user.role.value,
-    )
+    return _to_user_response(current_user)
 
 
 @router.patch("/me", response_model=UserResponse)
@@ -47,20 +54,23 @@ async def update_profile(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    name = body.full_name.strip()
-    if not name:
-        raise HTTPException(status_code=422, detail="Nome nao pode ser vazio")
-    current_user.full_name = name
+    """Atualiza perfil do usuário.
+
+    `notify_content_ready` controla o opt-out do email de "vídeo pronto"
+    (disparado quando um ContentItem transiciona para status=ready) — ver
+    viraxis.infrastructure.notifications.notify_content_ready.
+    """
+    if body.full_name is not None:
+        name = body.full_name.strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="Nome nao pode ser vazio")
+        current_user.full_name = name
+    if body.notify_content_ready is not None:
+        current_user.notify_content_ready = body.notify_content_ready
     session.add(current_user)
     await session.commit()
     await session.refresh(current_user)
-    return UserResponse(
-        id=str(current_user.id),
-        email=current_user.email,
-        full_name=current_user.full_name,
-        plan=current_user.plan.value,
-        role=current_user.role.value,
-    )
+    return _to_user_response(current_user)
 
 
 @router.post("/me/password", status_code=status.HTTP_204_NO_CONTENT)

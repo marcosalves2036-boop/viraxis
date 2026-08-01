@@ -45,6 +45,14 @@ class User(BaseModelMixin, Base):
         Boolean, nullable=False, default=False, server_default="false",
         comment="True após o usuário clicar no link de verificação de email.",
     )
+    notify_content_ready: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true",
+        comment=(
+            "Opt-out de notificações por email quando um ContentItem fica "
+            "pronto (status=ready). True (padrão) = recebe o email. "
+            "False = usuário desabilitou este tipo de notificação."
+        ),
+    )
     role: Mapped[UserRole] = mapped_column(
         Enum(UserRole, name="userrole", create_constraint=True),
         nullable=False,

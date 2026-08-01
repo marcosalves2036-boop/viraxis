@@ -765,6 +765,10 @@ async def approve_content_item(
     meta["render_stage"] = "aprovado"
     item.production_meta = meta
     await session.commit()
+
+    from viraxis.infrastructure.notifications import notify_content_ready
+    await notify_content_ready(session, item)
+
     return {"id": str(item_id), "status": "ready"}
 
 

@@ -31,8 +31,16 @@ jobs:
           echo "HTTP status: $HTTP_CODE"
           cat /tmp/render_health.json || true
           echo ""
-          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 500 ]; then
-            echo "::warning::Render /health respondeu HTTP $HTTP_CODE"
+          # /health agora checa conectividade real com Neon (SELECT 1) e Supabase
+          # Storage, devolvendo status=degraded + HTTP 503 quando alguma dependencia
+          # falha (em vez de sempre 200 estatico). Antes desta mudanca este step so
+          # emitia ::warning:: e sempre saia com exit 0 — o Supabase ficou INACTIVE
+          # num ciclo anterior e isso passou despercebido porque nenhum workflow
+          # falhava. Agora qualquer resposta != 200 falha o job (exit 1), que aciona
+          # a notificacao padrao do GitHub Actions de workflow quebrado.
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::Render /health respondeu HTTP $HTTP_CODE (esperado 200) - servico ou dependencia (Neon/Supabase Storage) pode estar fora do ar"
+            exit 1
           fi
 
       - name: Ping Supabase REST API

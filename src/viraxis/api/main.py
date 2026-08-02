@@ -181,9 +181,108 @@ async def startup_event() -> None:
     asyncio.create_task(_recover_stuck_decisions())
 
 # Health
+#
+# Antes desta mudanca, /health devolvia {"status": "ok"} estatico — sem
+# nenhuma checagem real de dependencia. O keep-alive (.github/workflows/
+# keepalive.yml, a cada 10min) trata qualquer HTTP 200 como "servico vivo".
+# Isso ja causou um incidente real: o projeto Supabase ficou INACTIVE
+# (pausado por inatividade, resolve DNS como NXDOMAIN) e passou despercebido
+# por um ciclo inteiro porque /health continuava respondendo 200 mesmo sem
+# conseguir falar com o Storage.
+#
+# Este endpoint agora verifica de verdade:
+#   1. Neon/Postgres — SELECT 1 via asyncpg direto (bypassa o pool do
+#      SQLAlchemy de proposito: queremos detectar problema de conectividade
+#      de rede/credencial, nao um pool exaurido por outra rota).
+#   2. Supabase Storage — GET no endpoint de bucket via REST API.
+# Se qualquer uma falhar, devolve status=degraded + HTTP 503 (em vez de 200),
+# para que o keep-alive (ajustado nesta mesma mudanca) falhe o workflow e
+# notifique. Timeout curto em cada checagem (5s) para não travar o health
+# check nem o cold start do Render.
+async def _check_database() -> dict:
+    """SELECT 1 direto via asyncpg — não usa o pool do SQLAlchemy para não
+    misturar sintomas (conexão exaurida por outra rota vs. banco fora do ar)."""
+    import asyncio as _asyncio
+    from urllib.parse import urlparse
+
+    from viraxis.config import settings
+
+    if not settings.database_url:
+        return {"ok": False, "detail": "DATABASE_URL não configurada"}
+
+    try:
+        import asyncpg
+
+        parsed = urlparse(settings.database_url)
+        conn = await _asyncio.wait_for(
+            asyncpg.connect(
+                host=parsed.hostname,
+                port=parsed.port or 5432,
+                user=parsed.username,
+                password=parsed.password,
+                database=(parsed.path or "/neondb").lstrip("/"),
+                ssl="require",
+            ),
+            timeout=5.0,
+        )
+        try:
+            value = await _asyncio.wait_for(conn.fetchval("SELECT 1"), timeout=5.0)
+        finally:
+            await conn.close()
+        if value != 1:
+            return {"ok": False, "detail": f"SELECT 1 retornou valor inesperado: {value!r}"}
+        return {"ok": True}
+    except _asyncio.TimeoutError:
+        return {"ok": False, "detail": "Timeout ao conectar/consultar o Postgres (Neon)"}
+    except Exception as e:  # noqa: BLE001 — health check precisa capturar QUALQUER falha
+        return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
+
+
+async def _check_storage() -> dict:
+    """GET no bucket configurado do Supabase Storage via REST API."""
+    from viraxis.config import settings
+
+    if not settings.supabase_url or not settings.supabase_service_role_key:
+        return {"ok": False, "detail": "SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY não configuradas"}
+
+    try:
+        import httpx
+
+        url = f"{settings.supabase_url}/storage/v1/bucket/{settings.supabase_bucket}"
+        headers = {
+            "Authorization": f"Bearer {settings.supabase_service_role_key}",
+            "apikey": settings.supabase_service_role_key,
+        }
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(url, headers=headers)
+        if resp.status_code == 200:
+            return {"ok": True}
+        return {"ok": False, "detail": f"HTTP {resp.status_code}: {resp.text[:200]}"}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
+
+
 @app.get("/health", tags=["infra"])
-async def health() -> dict:
-    return {"status": "ok", "service": "viraxis-api", "version": "0.3.0"}
+async def health() -> JSONResponse:
+    db_check, storage_check = await asyncio.gather(
+        _check_database(), _check_storage(), return_exceptions=False
+    )
+
+    checks = {"database": db_check, "storage": storage_check}
+    healthy = db_check["ok"] and storage_check["ok"]
+
+    if not healthy:
+        _startup_logger.warning("Health check degradado: %s", checks)
+
+    return JSONResponse(
+        status_code=200 if healthy else 503,
+        content={
+            "status": "ok" if healthy else "degraded",
+            "service": "viraxis-api",
+            "version": "0.3.0",
+            "checks": checks,
+        },
+    )
 
 
 @app.get("/content-items/ffmpeg-check", tags=["infra"])
@@ -220,49 +319,3 @@ async def ffmpeg_check() -> dict:
         }
 
     return {"ffmpeg_available": True, "version": version_str, "path": ffmpeg_path}
-
-
-    # Extrai host/porta da DATABASE_URL
-    from urllib.parse import urlparse
-    parsed = urlparse(settings.database_url)
-    host = parsed.hostname or "unknown"
-    port = parsed.port or 5432
-
-    # 1. TCP raw
-    tcp_ok = False
-    tcp_err = ""
-    try:
-        loop = asyncio.get_event_loop()
-        def _tcp():
-            s = socket.create_connection((host, port), timeout=5)
-            s.close()
-            return True
-        tcp_ok = await loop.run_in_executor(None, _tcp)
-    except Exception as e:
-        tcp_err = f"{type(e).__name__}: {e}"
-
-    # 2. asyncpg
-    pg_ok = False
-    pg_err = ""
-    try:
-        import asyncpg
-        conn = await asyncio.wait_for(
-            asyncpg.connect(
-                host=host, port=port,
-                user=parsed.username, password=parsed.password,
-                database=(parsed.path or "/neondb").lstrip("/"),
-                ssl="require",
-            ),
-            timeout=8,
-        )
-        await conn.fetchval("SELECT 1")
-        await conn.close()
-        pg_ok = True
-    except Exception as e:
-        pg_err = f"{type(e).__name__}: {e}"
-
-    return {
-        "host": host, "port": port,
-        "tcp": "ok" if tcp_ok else f"FAIL: {tcp_err}",
-        "asyncpg": "ok" if pg_ok else f"FAIL: {pg_err}",
-    }

@@ -84,6 +84,16 @@ class RawVideo(BaseModelMixin, Base):
         ),
     )
 
+    # Categoria da última falha crítica (preenchido só quando status=failed).
+    # Usado por /raw-videos/{id}/reanalyze e por lógica de retry automático futura.
+    error_type: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, default=None,
+        comment=(
+            "Categoria da falha crítica de análise: download_failed | timeout | "
+            "analysis_failed. Nulo quando status != failed."
+        ),
+    )
+
     # Relationships
     office: Mapped["Office"] = relationship(  # type: ignore[name-defined]  # noqa: F821
         "Office", back_populates="raw_videos", lazy="raise"

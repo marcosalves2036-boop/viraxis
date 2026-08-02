@@ -404,6 +404,9 @@ async def analyze_uploaded_video(video_id: str, signed_url: str) -> None:
     gemini_analysis: dict = {}
     transcription: dict = {"text": "", "segments": []}
     critical_error: str | None = None
+    # Categoria estruturada do erro — persistida em raw_videos.error_type para
+    # o endpoint /reanalyze (mensagem certa na UI) e para retry automático futuro.
+    critical_error_type: str | None = None
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
@@ -456,18 +459,23 @@ async def analyze_uploaded_video(video_id: str, signed_url: str) -> None:
                 f"Falha ao baixar o vídeo do armazenamento (HTTP {e.response.status_code}). "
                 "A URL assinada pode ter expirado ou o arquivo foi removido."
             )
+            critical_error_type = "download_failed"
             logger.error("upload_analyzer erro crítico (download) | video_id=%s | erro=%s", video_id, e)
         except httpx.TimeoutException as e:
             critical_error = "Tempo esgotado ao baixar o vídeo. Tente reenviar o arquivo."
+            critical_error_type = "timeout"
             logger.error("upload_analyzer timeout de download | video_id=%s | erro=%s", video_id, e)
         except Exception as e:
             critical_error = f"Falha inesperada ao processar o vídeo: {e}"
+            critical_error_type = "analysis_failed"
             logger.error("upload_analyzer erro crítico | video_id=%s | erro=%s", video_id, e)
 
     if critical_error:
         # Falha crítica: não há vídeo baixado nem metadados técnicos utilizáveis.
         # Marca o vídeo como 'failed' com mensagem legível em vez de deixá-lo
-        # preso em 'processing' ou mascarar o erro como 'ready'.
+        # preso em 'processing' ou mascarar o erro como 'ready'. error_type fica
+        # estruturado (download_failed | timeout | analysis_failed) para o
+        # endpoint /reanalyze e para lógica de retry automático futura.
         async with AsyncSessionLocal() as session:
             from sqlalchemy import update as sa_update
             from uuid import UUID as _UUID
@@ -477,13 +485,18 @@ async def analyze_uploaded_video(video_id: str, signed_url: str) -> None:
                 .where(RawVideo.id == _UUID(video_id))
                 .values(
                     status=RawVideoStatus.failed,
-                    ai_analysis={"status": "failed", "error": critical_error},
+                    error_type=critical_error_type,
+                    ai_analysis={
+                        "status": "failed",
+                        "error": critical_error,
+                        "error_type": critical_error_type,
+                    },
                 )
             )
             await session.commit()
         logger.error(
-            "upload_analyzer FALHOU definitivamente | video_id=%s | motivo=%s",
-            video_id, critical_error,
+            "upload_analyzer FALHOU definitivamente | video_id=%s | tipo=%s | motivo=%s",
+            video_id, critical_error_type, critical_error,
         )
         return
 
@@ -519,6 +532,9 @@ async def analyze_uploaded_video(video_id: str, signed_url: str) -> None:
         values: dict = {
             "status": RawVideoStatus.ready,
             "ai_analysis": ai_analysis,
+            # Limpa error_type de uma tentativa anterior (ex: reanalyze bem-sucedido
+            # depois de um failed) — o vídeo não está mais em estado de erro.
+            "error_type": None,
         }
         if duration_seconds:
             values["duration_seconds"] = duration_seconds

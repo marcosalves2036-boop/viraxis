@@ -119,6 +119,7 @@ class RawVideoResponse(BaseModel):
     description: Optional[str]
     tags: list
     ai_analysis: Optional[dict]
+    error_type: Optional[str]
     created_at: str
     updated_at: str
 
@@ -138,6 +139,7 @@ class RawVideoResponse(BaseModel):
             description=v.description,
             tags=v.tags or [],
             ai_analysis=v.ai_analysis,
+            error_type=v.error_type,
             created_at=v.created_at.isoformat(),
             updated_at=v.updated_at.isoformat(),
         )
@@ -411,6 +413,96 @@ async def confirm_upload(
     await session.commit()
     await session.refresh(video)
 
+    background_tasks.add_task(analyze_uploaded_video, str(video.id), signed)
+
+    return RawVideoResponse.from_model(video, signed_url=signed)
+
+
+@router.post("/{video_id}/reanalyze", response_model=RawVideoResponse)
+async def reanalyze_video(
+    video_id: str,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Re-dispara a análise de IA de um RawVideo com status=failed, sem exigir
+    novo upload — reusa o arquivo já presente no Supabase Storage (r2_key).
+
+    Usado pelo botão "Tentar novamente" da Biblioteca (frontend do Arthur):
+    o usuário não precisa reenviar o vídeo, só confirmar a nova tentativa.
+
+    Fluxo:
+      1. Valida que o vídeo existe e pertence ao usuário autenticado
+         (mesma checagem de autorização multi-tenant de get_video/update_video/
+         delete_video: `video.user_id != current_user.id` → 404. Não vazamos
+         "vídeo existe mas não é seu" via 403 — 404 evita enumeração).
+      2. Recusa com 422 se o vídeo não estiver em status=failed (idempotência:
+         não faz sentido reanalisar algo pending/processing/ready).
+      3. Gera uma signed URL nova (a antiga pode ter expirado — validade 24h)
+         a partir do r2_key já armazenado, sem tocar no arquivo no bucket.
+      4. Volta status=processing, limpa error_type e enfileira
+         analyze_uploaded_video em BackgroundTask — o MESMO fluxo assíncrono
+         usado no upload original (confirm_upload), então o resto do pipeline
+         (ffprobe, Gemini, Whisper, gravação de ai_analysis) é idêntico.
+    """
+    repo = RawVideoRepository(session)
+    video = await repo.get(_parse_uuid(video_id, "video_id"))
+    if not video or video.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Vídeo não encontrado.")
+
+    if video.status != RawVideoStatus.failed:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Só é possível reanalisar vídeos com status=failed "
+                f"(status atual: {video.status.value})."
+            ),
+        )
+
+    if not _supabase_configured():
+        logger.error("reanalyze chamado sem Supabase configurado | video_id=%s", video_id)
+        raise HTTPException(status_code=503, detail="Armazenamento não configurado. Contate o suporte.")
+
+    if not video.r2_key:
+        raise HTTPException(
+            status_code=422,
+            detail="Vídeo sem arquivo associado no armazenamento — não é possível reanalisar. Faça um novo upload.",
+        )
+
+    signed = await _signed_url(video.r2_key)
+    if not signed:
+        logger.error(
+            "reanalyze: falha ao gerar signed URL | video_id=%s | r2_key=%s",
+            video_id, video.r2_key,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="Erro ao gerar URL de acesso ao arquivo no armazenamento. Tente novamente em instantes.",
+        )
+
+    prior_analysis = video.ai_analysis or {}
+    video.status = RawVideoStatus.processing
+    video.error_type = None
+    video.r2_url = signed
+    # Preserva o histórico da falha anterior sob uma chave própria, mas sinaliza
+    # que uma nova tentativa está em andamento — evita a UI mostrar "failed"
+    # obsoleto entre o disparo do reanalyze e a conclusão da nova análise.
+    video.ai_analysis = {
+        **prior_analysis,
+        "status": "reanalyzing",
+        "previous_failure": {
+            "error": prior_analysis.get("error"),
+            "error_type": prior_analysis.get("error_type"),
+        },
+    }
+    session.add(video)
+    await session.commit()
+    await session.refresh(video)
+
+    logger.info(
+        "reanalyze disparado | video_id=%s | user_id=%s | office_id=%s",
+        video_id, current_user.id, video.office_id,
+    )
     background_tasks.add_task(analyze_uploaded_video, str(video.id), signed)
 
     return RawVideoResponse.from_model(video, signed_url=signed)

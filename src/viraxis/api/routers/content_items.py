@@ -12,12 +12,13 @@ import logging
 from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from viraxis.api.deps import get_current_user, get_session
+from viraxis.api.rate_limit import limiter
 from viraxis.api.utils import parse_uuid as _parse_uuid
 from viraxis.domain.models.content_item import ContentItem, ContentStatus
 from viraxis.domain.models.office import Office
@@ -493,7 +494,9 @@ async def _compose_ai_video_v2_background(item_id) -> None:
     "/{office_id}/content-items/{item_id}/process-video",
     response_model=ProcessVideoResponse,
 )
+@limiter.limit("20/minute")
 async def process_video(
+    request: Request,
     office_id: UUID,
     item_id: UUID,
     background_tasks: BackgroundTasks,
@@ -509,6 +512,10 @@ async def process_video(
 
     Atualiza storage_path (caminho estável no bucket) e status=ready.
     Retorna signed URL (7 dias) para reprodução imediata.
+
+    Rate limit (20/min por usuário): dispara FFmpeg (corte/composição de
+    vídeo) em BackgroundTask — CPU-bound e pesado o suficiente para
+    justificar um teto mesmo sendo assíncrono.
     """
     await _get_office_or_404(office_id, current_user.id, session)
     repo = ContentItemRepository(session)

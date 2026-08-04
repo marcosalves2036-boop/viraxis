@@ -3,12 +3,13 @@
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from viraxis.api.deps import get_current_user, get_session
+from viraxis.api.rate_limit import limiter
 from viraxis.domain.models.office import Office
 from viraxis.domain.models.user import User
 
@@ -104,13 +105,18 @@ class BatchSuggestResponse(BaseModel):
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/batch-suggest", response_model=BatchSuggestResponse)
+@limiter.limit("40/minute")
 async def batch_suggest(
+    request: Request,
     raw_video_id: UUID,
     office_id: UUID,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    """Sugere quantos vídeos gerar a partir de um bruto (duração + highlights)."""
+    """Sugere quantos vídeos gerar a partir de um bruto (duração + highlights).
+
+    Rate limit: leve (não chama LLM), mas faz parte de /brain/* — limite
+    generoso só para nunca ficar totalmente sem freio."""
     from viraxis.domain.models.raw_video import RawVideo
 
     raw_video = await session.get(RawVideo, raw_video_id)
@@ -131,7 +137,9 @@ async def batch_suggest(
 
 
 @router.post("/batch-run", response_model=BatchBrainResponse)
+@limiter.limit("8/minute")
 async def batch_brain_run(
+    request: Request,
     body: BatchBrainRequest,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
@@ -141,6 +149,11 @@ async def batch_brain_run(
     Cada rodada gera um ContentDecision independente com foco num
     trecho diferente do vídeo. Retorna a lista de decisões criadas.
     Se o vídeo não tem highlights, roda 1x sem foco (comportamento padrão).
+
+    Rate limit apertado (8/min por usuário): cada highlight dispara uma
+    chamada real de LLM (`run_brain` -> CrewAI/Groq) — até `max_allowed`
+    rodadas por request, então o custo real por chamada é ainda maior do
+    que 1 hit do limiter sugere.
     """
     from viraxis.domain.models.raw_video import RawVideo
     from viraxis.agents.brain.runner import run_brain

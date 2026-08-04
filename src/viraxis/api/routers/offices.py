@@ -5,13 +5,14 @@ import json
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import delete as sa_delete, select
 
 from viraxis.api.deps import get_current_user, get_session
+from viraxis.api.rate_limit import limiter
 from viraxis.domain.models.content_decision import ContentDecision, DecisionStatus
 from viraxis.domain.models.content_item import ContentItem, ContentStatus
 from viraxis.domain.models.niche_profile import NicheProfile
@@ -307,7 +308,9 @@ class BrainRunRequest(BaseModel):
 
 
 @router.post("/{office_id}/brain/run", response_model=BrainRunResponse)
+@limiter.limit("8/minute")
 async def run_brain_for_office(
+    request: Request,
     office_id: UUID,
     body: BrainRunRequest = BrainRunRequest(),
     current_user: User = Depends(get_current_user),
@@ -317,6 +320,9 @@ async def run_brain_for_office(
 
     Aceita opcionalmente raw_video_id para o BRAIN vincular um vídeo de referência
     à decisão, que o RENDERER vai usar como contexto de estilo.
+
+    Rate limit apertado (8/min por usuário) — cada chamada dispara uma
+    execução real de LLM (CrewAI/Groq) via `run_brain`.
     """
     await _get_office_or_404(office_id, current_user.id, session)
 
@@ -545,7 +551,9 @@ async def _run_renderer_safe(office_id, user_id, decision_id, extra_instructions
             logger.error("Falha ao gravar erro no DB: %s", db_err)
 
 @router.patch("/{office_id}/decisions/{decision_id}/status", response_model=DecisionResponse)
+@limiter.limit("15/minute")
 async def update_decision_status(
+    request: Request,
     office_id: UUID,
     decision_id: UUID,
     body: DecisionStatusUpdate,
@@ -554,8 +562,12 @@ async def update_decision_status(
     session: AsyncSession = Depends(get_session),
 ):
     """Aprova, rejeita ou avança o status de uma decisão do BRAIN.
-    
-    Quando status=approved, dispara o RENDERER v2 em background automaticamente.
+
+    Quando status=approved, dispara o RENDERER v2 em background automaticamente
+    (`_run_renderer_safe` -> `run_renderer_v2`, chamada real de LLM). É este
+    disparo — o "/renderer" citado no BACKLOG, que não existe como rota
+    própria — que justifica o rate limit aqui, mesmo o endpoint também
+    cobrindo aprovação/rejeição sem custo de LLM.
     """
     await _get_office_or_404(office_id, current_user.id, session)
 

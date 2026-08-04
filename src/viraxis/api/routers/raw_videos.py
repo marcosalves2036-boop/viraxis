@@ -6,12 +6,13 @@ import uuid
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select as sa_select
 
 from viraxis.api.deps import get_current_user, get_session
+from viraxis.api.rate_limit import limiter
 from viraxis.api.utils import parse_uuid as _parse_uuid
 from viraxis.config import settings
 from viraxis.domain.models.office import Office
@@ -148,7 +149,9 @@ class RawVideoResponse(BaseModel):
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 
 @router.post("/upload", response_model=RawVideoResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit("15/minute")
 async def upload_video(
+    request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     office_id: str = Form(...),
@@ -161,6 +164,9 @@ async def upload_video(
     Recebe vídeo via multipart, faz upload para o Supabase Storage,
     registra metadados no banco e dispara análise automática de IA em background.
     Retorna o vídeo criado (status=processing enquanto a IA analisa, depois ready).
+
+    Rate limit (15/min por usuário): cada upload dispara análise de IA
+    (Gemini + Whisper) em background — custo real por chamada.
     """
     if not _supabase_configured():
         raise HTTPException(
@@ -269,7 +275,9 @@ class UploadUrlResponse(BaseModel):
 
 
 @router.post("/upload-url", response_model=UploadUrlResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit("15/minute")
 async def create_upload_url(
+    request: Request,
     body: UploadUrlRequest,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
@@ -278,6 +286,10 @@ async def create_upload_url(
 
     Evita passar o arquivo pelo Render (vídeos grandes derrubavam o serviço).
     Fluxo: upload-url → PUT do arquivo na URL → confirm-upload.
+
+    Rate limit (15/min por usuário): cada chamada cria uma linha `RawVideo`
+    nova e cada upload confirmado dispara análise de IA — mesmo write
+    amplificado do endpoint /upload acima.
     """
     if not _supabase_configured():
         logger.error("upload-url chamado sem Supabase configurado (SUPABASE_URL/SERVICE_ROLE_KEY ausentes).")
@@ -419,7 +431,9 @@ async def confirm_upload(
 
 
 @router.post("/{video_id}/reanalyze", response_model=RawVideoResponse)
+@limiter.limit("10/minute")
 async def reanalyze_video(
+    request: Request,
     video_id: str,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
@@ -427,6 +441,9 @@ async def reanalyze_video(
 ):
     """Re-dispara a análise de IA de um RawVideo com status=failed, sem exigir
     novo upload — reusa o arquivo já presente no Supabase Storage (r2_key).
+
+    Rate limit (10/min por usuário): mesmo custo real de análise de IA do
+    endpoint de upload original — só sem o envio de arquivo.
 
     Usado pelo botão "Tentar novamente" da Biblioteca (frontend do Arthur):
     o usuário não precisa reenviar o vídeo, só confirmar a nova tentativa.

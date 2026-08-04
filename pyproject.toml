@@ -51,6 +51,8 @@ dependencies = [
     "python-jose[cryptography]>=3.3.0",  # JWT
     "httpx>=0.27.0",                      # HTTP client para Resend API
     "email-validator>=2.0",               # Validação de EmailStr (Pydantic)
+    "python-multipart>=0.0.9",            # Form()/File() no FastAPI (upload multipart)
+    "slowapi>=0.1.9",                     # Rate limiting por user_id (multi-tenant)
 ]
 
 [project.optional-dependencies]

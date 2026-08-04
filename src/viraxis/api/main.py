@@ -5,7 +5,9 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from slowapi.errors import RateLimitExceeded
 
+from viraxis.api.rate_limit import limiter, rate_limit_exceeded_handler
 from viraxis.api.routers import agent_run_logs, analytics, auth, billing, brain, content_items, dev, oauth, offices, raw_videos, social_accounts, users
 
 _error_logger = logging.getLogger("viraxis.errors")
@@ -17,6 +19,12 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
+
+# Rate limiting (slowapi) — por user_id, ver src/viraxis/api/rate_limit.py.
+# `app.state.limiter` é onde o slowapi (e nosso próprio handler) esperam
+# encontrar a instância; sem isso `@limiter.limit(...)` nos routers falha.
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 
 
 # ── Exception handler global ──────────────────────────────────────────────────

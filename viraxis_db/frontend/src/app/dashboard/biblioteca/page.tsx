@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { offices as officesApi } from "@/lib/api";
+import RetryAnalysisButton, { errorTypeLabel } from "@/components/biblioteca/RetryAnalysisButton";
 
 interface Office { id: string; name: string; }
 
@@ -24,6 +25,9 @@ interface RawVideo {
   duration_seconds: number | null; tags: string[];
   description: string | null; r2_url: string | null;
   ai_analysis: AiAnalysis | null;
+  // download_failed | timeout | analysis_failed | null — diferencia o motivo
+  // da falha de análise para a mensagem exibida ao usuário (RetryAnalysisButton).
+  error_type: string | null;
   created_at: string;
 }
 
@@ -61,13 +65,14 @@ function fmtDuration(s: number | null) {
 // ── Modal de detalhe do vídeo ─────────────────────────────────────────────────
 
 function VideoModal({
-  video, officeId, onClose, onDelete, onSaved,
+  video, officeId, onClose, onDelete, onSaved, onReanalyzeSuccess,
 }: {
   video: RawVideo;
   officeId: string;
   onClose: () => void;
   onDelete: (id: string) => Promise<void>;
   onSaved: () => void;
+  onReanalyzeSuccess: (videoId: string, patch: { status: string; error_type: string | null }) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [editTitle, setEditTitle] = useState(video.title || "");
@@ -186,11 +191,25 @@ function VideoModal({
           </div>
         )}
 
-        {/* Erro de análise */}
-        {video.status === "failed" && analysisErrorMessage(video) && (
-          <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4">
-            <p className="text-xs font-semibold text-red-400 uppercase tracking-wider mb-1.5">❌ Erro na análise</p>
-            <p className="text-red-300/80 text-sm leading-relaxed">{analysisErrorMessage(video)}</p>
+        {/* Erro de análise + retry — mensagem específica via error_type,
+            botão "Tentar novamente" que re-dispara a análise sem novo upload */}
+        {video.status === "failed" && (
+          <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 space-y-3">
+            <div>
+              <p className="text-xs font-semibold text-red-400 uppercase tracking-wider mb-1.5">
+                ❌ {errorTypeLabel(video.error_type)}
+              </p>
+              {analysisErrorMessage(video) && (
+                <p className="text-red-300/80 text-sm leading-relaxed">{analysisErrorMessage(video)}</p>
+              )}
+            </div>
+            <RetryAnalysisButton
+              videoId={video.id}
+              errorType={video.error_type as "download_failed" | "timeout" | "analysis_failed" | null}
+              variant="modal"
+              showReason={false}
+              onSuccess={patch => onReanalyzeSuccess(video.id, patch)}
+            />
           </div>
         )}
 
@@ -555,6 +574,14 @@ function BibliotecaContent() {
     loadVideos();
   }
 
+  // Retry bem-sucedido (POST /raw-videos/{id}/reanalyze) — reflete
+  // status: "processing" imediatamente no card e no modal, sem esperar o
+  // próximo ciclo do polling de 5s (que assume o resto a partir daqui).
+  const handleReanalyzeSuccess = useCallback((videoId: string, patch: { status: string; error_type: string | null }) => {
+    setVideos(prev => prev.map(v => v.id === videoId ? { ...v, ...patch } : v));
+    setSelectedVideo(prev => (prev && prev.id === videoId ? { ...prev, ...patch } : prev));
+  }, []);
+
   return (
     <div className="space-y-6">
       {selectedVideo && (
@@ -564,6 +591,7 @@ function BibliotecaContent() {
           onClose={() => setSelectedVideo(null)}
           onDelete={handleDelete}
           onSaved={() => { setSelectedVideo(null); loadVideos(); }}
+          onReanalyzeSuccess={handleReanalyzeSuccess}
         />
       )}
 
@@ -634,10 +662,18 @@ function BibliotecaContent() {
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
           {videos.map(v => (
-            <button
+            // Div, não <button> — o card precisa hospedar o botão "Tentar
+            // novamente" quando status=failed, e <button> dentro de <button>
+            // é HTML inválido. role/tabIndex/onKeyDown preservam a acessibilidade.
+            <div
               key={v.id}
+              role="button"
+              tabIndex={0}
               onClick={() => setSelectedVideo(v)}
-              className="card-glass rounded-2xl overflow-hidden text-left group hover:border-violet-500/30 border border-white/[0.06] transition-all"
+              onKeyDown={e => {
+                if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSelectedVideo(v); }
+              }}
+              className="card-glass rounded-2xl overflow-hidden text-left group hover:border-violet-500/30 border border-white/[0.06] transition-all cursor-pointer"
             >
               {/* Thumbnail 16:9 */}
               <div className="relative aspect-video bg-black flex items-center justify-center">
@@ -666,7 +702,7 @@ function BibliotecaContent() {
                 {v.status === "failed" && (
                   <span
                     className="absolute top-1.5 right-1.5 text-xs bg-black/60 rounded-full px-1.5 py-0.5"
-                    title={analysisErrorMessage(v) || "Erro na análise"}
+                    title={analysisErrorMessage(v) || errorTypeLabel(v.error_type)}
                   >
                     ❌
                   </span>
@@ -698,8 +734,22 @@ function BibliotecaContent() {
                 <p className="text-white/25 text-[10px] mt-1">
                   {new Date(v.created_at).toLocaleDateString("pt-BR")}
                 </p>
+                {/* Retry inline no card — evita ter que abrir o modal só para
+                    tentar de novo. stopPropagation dentro do componente
+                    impede que o clique também abra o modal de detalhe. */}
+                {v.status === "failed" && (
+                  <div className="mt-2">
+                    <RetryAnalysisButton
+                      videoId={v.id}
+                      errorType={v.error_type as "download_failed" | "timeout" | "analysis_failed" | null}
+                      variant="card"
+                      showReason={false}
+                      onSuccess={patch => handleReanalyzeSuccess(v.id, patch)}
+                    />
+                  </div>
+                )}
               </div>
-            </button>
+            </div>
           ))}
 
           {/* Card "+" para upload */}

@@ -4,6 +4,8 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { auth } from "@/lib/api";
+import { OnboardingGateView, useOnboardingStatus } from "@/components/OnboardingGate";
+import { isPathAllowedForStep } from "@/lib/onboarding";
 
 interface User {
   id: string;
@@ -32,16 +34,18 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [token, setToken] = useState<string | null>(null);
 
   useEffect(() => {
-    const token = auth.getToken();
-    if (!token) { router.replace("/login"); return; }
+    const t = auth.getToken();
+    if (!t) { router.replace("/login"); return; }
+    setToken(t);
     const raw = localStorage.getItem("viraxis_user");
     if (raw) {
       try { setUser(JSON.parse(raw)); } catch {}
     }
     // Refresh from API — picks up role + latest plan
-    fetch("/api/users/me", { headers: { Authorization: `Bearer ${token}` } })
+    fetch("/api/users/me", { headers: { Authorization: `Bearer ${t}` } })
       .then(r => r.ok ? r.json() : null)
       .then(d => {
         if (d) {
@@ -59,6 +63,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   const isAdmin = user?.role === "admin";
   const initials = user?.full_name?.split(" ").map(n => n[0]).slice(0, 2).join("").toUpperCase() ?? "?";
+
+  // Onboarding travado — contas admin (Kevin/Davi/Marcos internos) não fazem
+  // parte do funil B2C que motivou o gate (ver vault/06-marca/viraxis-marca.md),
+  // então pulam o bloqueio. Único ponto de fetch/polling do status: a sidebar
+  // (bloqueio de links) e a área de conteúdo (gate/banner) usam o mesmo estado.
+  const onboarding = useOnboardingStatus(isAdmin ? null : token);
+  const gateActive = !isAdmin && !!onboarding.status && !onboarding.status.completed;
+  const currentOnboardingStep = onboarding.status?.current_step ?? 1;
 
   return (
     <div className="min-h-screen flex" style={{ background: "var(--background)" }}>
@@ -86,6 +98,24 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
           {NAV.map(({ href, label, icon, exact }) => {
             const active = exact ? pathname === href : pathname.startsWith(href);
+            // Trava de onboarding: enquanto não completo, só as rotas do step
+            // corrente ficam clicáveis — o resto vira item bloqueado (sem
+            // navegação), reforçando o "não pulável" também na sidebar.
+            const locked = gateActive && !isPathAllowedForStep(href, currentOnboardingStep);
+            if (locked) {
+              return (
+                <span
+                  key={href}
+                  title="Complete o onboarding para desbloquear esta seção"
+                  aria-disabled="true"
+                  className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-white/20 cursor-not-allowed select-none"
+                >
+                  <span className="text-base opacity-40">{icon}</span>
+                  {label}
+                  <span className="ml-auto text-xs">🔒</span>
+                </span>
+              );
+            }
             return (
               <Link
                 key={href}
@@ -174,18 +204,37 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             <span className="text-xs text-white/30 hidden sm:block">
               Plano <span className="text-violet-400 font-semibold capitalize">{user?.plan ?? "Free"}</span>
             </span>
-            <Link
-              href="/dashboard/configuracoes"
-              className="text-xs px-3 py-1.5 rounded-lg bg-violet-600/20 border border-violet-500/30 text-violet-300 hover:bg-violet-600/30 transition-colors"
-            >
-              Upgrade →
-            </Link>
+            {gateActive ? (
+              <span
+                title="Disponível após completar o onboarding"
+                className="text-xs px-3 py-1.5 rounded-lg bg-white/[0.03] border border-white/10 text-white/25 cursor-not-allowed"
+              >
+                Upgrade 🔒
+              </span>
+            ) : (
+              <Link
+                href="/dashboard/configuracoes"
+                className="text-xs px-3 py-1.5 rounded-lg bg-violet-600/20 border border-violet-500/30 text-violet-300 hover:bg-violet-600/30 transition-colors"
+              >
+                Upgrade →
+              </Link>
+            )}
           </div>
         </header>
 
         {/* Page content */}
         <main className="flex-1 overflow-auto p-6">
-          {children}
+          <OnboardingGateView
+            token={isAdmin ? null : token}
+            pathname={pathname}
+            status={onboarding.status}
+            loading={onboarding.loading}
+            error={onboarding.error}
+            onRetry={onboarding.refetch}
+            bypass={isAdmin}
+          >
+            {children}
+          </OnboardingGateView>
         </main>
       </div>
     </div>

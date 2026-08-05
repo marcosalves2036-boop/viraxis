@@ -2,8 +2,9 @@
 
 import enum
 import uuid
+from datetime import datetime
 
-from sqlalchemy import Boolean, Enum, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Enum, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -58,6 +59,33 @@ class User(BaseModelMixin, Base):
         nullable=False,
         default=UserRole.user,
         server_default=UserRole.user.value,
+    )
+
+    # ── Onboarding travado (gate de primeiro uso) ──────────────────────────
+    # Espelho persistido do progresso real do pipeline (não é checkbox manual:
+    # cada campo é recalculado a partir de eventos reais toda vez que o
+    # endpoint GET /users/me/onboarding é consultado — ver
+    # viraxis.api.routers.users._compute_onboarding_progress). Persistimos
+    # aqui para: (1) permitir consulta/auditoria via SQL direto sem refazer os
+    # três selects, e (2) fixar `onboarding_completed_at` permanentemente na
+    # primeira vez que os três marcos são atingidos, mesmo que o usuário
+    # depois delete o vídeo/decisão/conteúdo que os originou — o gate não
+    # deve reaparecer para quem já passou por ele.
+    has_uploaded_video: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false",
+        comment="True quando existe ao menos um RawVideo status=ready do usuário (qualquer escritório).",
+    )
+    has_brain_decision: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false",
+        comment="True quando existe ao menos uma ContentDecision criada pelo BRAIN para o usuário.",
+    )
+    has_ready_content: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false",
+        comment="True quando existe ao menos um ContentItem status=ready/published do usuário.",
+    )
+    onboarding_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None,
+        comment="Preenchido uma única vez quando os 3 marcos acima são atingidos. Trava o gate como concluído para sempre.",
     )
 
     # Relationships

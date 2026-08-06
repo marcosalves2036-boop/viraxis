@@ -13,6 +13,12 @@
 # testing
 /coverage
 
+# playwright (e2e/) — artefatos de execução local, não o código dos testes
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+
 # next.js
 /.next/
 /out/

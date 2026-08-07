@@ -163,7 +163,8 @@ def _run_ffprobe(video_path: str) -> dict:
         try:
             num, den = fps_raw.split("/")
             fps = round(int(num) / int(den), 2)
-        except Exception:
+        except Exception as e:
+            logger.debug("ffprobe: fps_raw inesperado (%r) — usando 0.0 | %s", fps_raw, e)
             fps = 0.0
 
         return {
@@ -352,8 +353,8 @@ async def _analyze_video_with_gemini(video_path: str, duration: float) -> dict:
         # Limpar arquivo do Gemini após uso
         try:
             await asyncio.to_thread(client.files.delete, name=video_file.name)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Falha ao limpar arquivo do Gemini %s (não crítico): %s", video_file.name, e)
 
         return result
 

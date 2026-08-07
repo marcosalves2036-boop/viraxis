@@ -6,6 +6,7 @@ Caminhos são sempre relativos à raiz do projeto — os agentes nunca precisam 
 o caminho absoluto do sistema operacional do usuário.
 """
 
+import logging
 import os
 import re
 from pathlib import Path
@@ -13,6 +14,8 @@ from typing import Optional, Type
 
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Raiz do projeto — configurável via env para Windows / Linux / CI
@@ -89,6 +92,7 @@ class ReadFileTool(BaseTool):
         except ValueError as e:
             return f"[ERRO de segurança] {e}"
         except Exception as e:
+            logger.warning("read_file falhou | path=%s | %s: %s", path, type(e).__name__, e)
             return f"[ERRO] {e}"
 
 
@@ -127,6 +131,7 @@ class WriteFileTool(BaseTool):
         except ValueError as e:
             return f"[ERRO de segurança] {e}"
         except Exception as e:
+            logger.warning("write_file falhou | path=%s | %s: %s", path, type(e).__name__, e)
             return f"[ERRO] {e}"
 
 
@@ -202,6 +207,7 @@ class ListDirectoryTool(BaseTool):
         except ValueError as e:
             return f"[ERRO de segurança] {e}"
         except Exception as e:
+            logger.warning("list_directory falhou | path=%s | %s: %s", path, type(e).__name__, e)
             return f"[ERRO] {e}"
 
 
@@ -269,7 +275,11 @@ class SearchCodeTool(BaseTool):
                             results.append(f"{rel}:{i}: {line.strip()}")
                             if len(results) >= max_results:
                                 break
-                except Exception:
+                except Exception as read_err:
+                    logger.debug(
+                        "search_code: pulando arquivo ilegível | file=%s | %s: %s",
+                        file_path, type(read_err).__name__, read_err,
+                    )
                     continue
                 if len(results) >= max_results:
                     break
@@ -282,4 +292,5 @@ class SearchCodeTool(BaseTool):
         except ValueError as e:
             return f"[ERRO de segurança] {e}"
         except Exception as e:
+            logger.warning("search_code falhou | pattern=%s | %s: %s", pattern, type(e).__name__, e)
             return f"[ERRO] {e}"

@@ -1,12 +1,15 @@
 """Ferramentas Python para validação e execução segura de código."""
 
 import ast
+import logging
 import subprocess
 import sys
 from typing import Type
 
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 
 class ValidatePythonInput(BaseModel):
@@ -39,4 +42,5 @@ class ValidatePythonTool(BaseTool):
                 f"  Trecho  : {e.text!r}"
             )
         except Exception as e:
+            logger.warning("validate_python falhou | filename=%s | %s: %s", filename, type(e).__name__, e)
             return f"[ERRO] {type(e).__name__}: {e}"

@@ -1317,6 +1317,97 @@ class TestProcessVideoEndpoint:
         resp = client.post(f"/offices/{office.id}/content-items/{uuid.uuid4()}/process-video")
         assert resp.status_code == 404
 
+    def test_new_script_reprocess_clears_previous_render_error(
+        self, monkeypatch, process_video_client_factory, process_video_user
+    ):
+        """BACKLOG P2 (fonte: dev1): render_error de uma tentativa anterior
+        falha não pode sobreviver ao início de um novo reprocessamento."""
+        import viraxis.api.routers.content_items as ci_mod
+
+        office = _pv_office(process_video_user.id)
+        item = _pv_item(
+            office.id, process_video_user.id, status=ContentStatus.failed,
+            production_meta={
+                "mode": "new_script",
+                "roteiro": {"hook": {"narracao": "oi"}},
+                "render_error": "TTS falhou na tentativa anterior",
+                "error": "traceback antigo",
+                "render_progress": 0,
+                "render_stage": "falhou",
+            },
+        )
+
+        async def _fake_bg(item_id):
+            return None
+
+        monkeypatch.setattr(ci_mod, "_compose_ai_video_v2_background", _fake_bg)
+
+        client = process_video_client_factory(_ItemsFakeSession(results=[office, item]))
+        resp = client.post(f"/offices/{office.id}/content-items/{item.id}/process-video")
+
+        assert resp.status_code == 200
+        assert "render_error" not in item.production_meta
+        assert "error" not in item.production_meta
+        assert item.production_meta["render_stage"] == "na fila"
+        # o resto do meta (roteiro) precisa ser preservado — não é um reset total
+        assert item.production_meta["roteiro"]["hook"]["narracao"] == "oi"
+
+    def test_editing_plan_reprocess_clears_previous_render_error(
+        self, monkeypatch, process_video_client_factory, process_video_user
+    ):
+        """Mesma garantia do teste acima, para o fluxo editing_plan."""
+        import viraxis.api.routers.content_items as ci_mod
+
+        office = _pv_office(process_video_user.id)
+        item = _pv_item(
+            office.id, process_video_user.id, status=ContentStatus.failed,
+            production_meta={
+                "plano_edicao": {"cortes": []},
+                "raw_video_id": str(uuid.uuid4()),
+                "render_error": "RawVideo não encontrado na tentativa anterior",
+                "render_progress": 0,
+                "render_stage": "falhou",
+            },
+        )
+
+        async def _fake_bg(item_id):
+            return None
+
+        monkeypatch.setattr(ci_mod, "_apply_editing_plan_background", _fake_bg)
+
+        client = process_video_client_factory(_ItemsFakeSession(results=[office, item]))
+        resp = client.post(f"/offices/{office.id}/content-items/{item.id}/process-video")
+
+        assert resp.status_code == 200
+        assert "render_error" not in item.production_meta
+        assert item.production_meta["render_stage"] == "na fila"
+        assert item.production_meta["plano_edicao"] == {"cortes": []}
+
+
+class TestMetaWithoutRenderError:
+    """Testes unitários do helper puro `_meta_without_render_error`."""
+
+    def test_remove_render_error_e_error_preservando_o_resto(self):
+        from viraxis.api.routers.content_items import _meta_without_render_error
+
+        meta = {
+            "render_error": "algo quebrou",
+            "error": "traceback",
+            "render_progress": 100,
+            "video_url": "https://exemplo.com/v.mp4",
+        }
+        cleaned = _meta_without_render_error(meta)
+        assert "render_error" not in cleaned
+        assert "error" not in cleaned
+        assert cleaned["render_progress"] == 100
+        assert cleaned["video_url"] == "https://exemplo.com/v.mp4"
+
+    def test_meta_sem_erro_permanece_inalterado(self):
+        from viraxis.api.routers.content_items import _meta_without_render_error
+
+        meta = {"render_progress": 20, "render_stage": "baixando vídeo"}
+        assert _meta_without_render_error(meta) == meta
+
 
 # =====================================================================
 # Parte 8 — _extract_script_for_tts (lógica pura de extração de texto p/ TTS)

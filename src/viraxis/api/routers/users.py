@@ -90,6 +90,15 @@ async def change_password(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
+    """Troca a senha do usuário autenticado.
+
+    Nota de verbo HTTP (BACKLOG P2, fonte: qa, 2026-07-29): specs antigas
+    descreviam este endpoint como `PUT /me/password`; o contrato real e
+    estável, consumido pelo proxy Next.js (`app/api/users/me/password/
+    route.ts`) e coberto por `tests/test_auth.py::TestChangePassword`, é
+    `POST /users/me/password`. Confirmado em 2026-08-06 que não há
+    divergência funcional — só a documentação antiga estava desatualizada.
+    """
     if not verify_password(body.current_password, current_user.hashed_password):
         raise HTTPException(status_code=400, detail="Senha atual incorreta")
     if len(body.new_password) < 8:

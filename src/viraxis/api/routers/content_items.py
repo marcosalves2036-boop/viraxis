@@ -29,6 +29,26 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/offices", tags=["content-items"])
 
+# Chaves de erro de renderização em `production_meta`. Duas variantes existem
+# na base hoje: `render_error` (fluxo editing_plan) e `error` (fluxo
+# new_script/compose v2) — ambas removidas nos mesmos pontos para não deixar
+# nenhuma das duas residual.
+_RENDER_ERROR_KEYS = ("render_error", "error")
+
+
+def _meta_without_render_error(meta: dict) -> dict:
+    """Copia `meta` sem as chaves de erro de renderização.
+
+    Contexto (BACKLOG P2 "Limpar render_error residual"): as escritas de
+    `production_meta` em sucesso/reinício de renderização faziam
+    `{**meta, ...}`, o que preserva qualquer `render_error`/`error` de uma
+    tentativa anterior falha — mesmo depois de `status` virar `ready` de
+    novo. Usar este helper nos pontos onde uma nova tentativa começa e onde
+    uma tentativa termina com sucesso garante que o erro antigo nunca
+    sobrevive a um reprocessamento bem-sucedido.
+    """
+    return {k: v for k, v in meta.items() if k not in _RENDER_ERROR_KEYS}
+
 
 # ── Schemas ────────────────────────────────────────────────────────────────────
 
@@ -407,7 +427,7 @@ async def _apply_editing_plan_background(item_id: UUID) -> None:
             item.storage_path = dest_path
             item.status = ContentStatus.ready
             item.production_meta = {
-                **(item.production_meta or {}),
+                **_meta_without_render_error(item.production_meta or {}),
                 "video_url": video_url,
                 "video_storage_path": dest_path,
                 "render_progress": 100,
@@ -453,7 +473,7 @@ async def _compose_ai_video_v2_background(item_id) -> None:
             item.status = ContentStatus.ready
             item.storage_path = dest_path
             item.production_meta = {
-                **(item.production_meta or {}),
+                **_meta_without_render_error(item.production_meta or {}),
                 "video_url": video_url,
                 "video_storage_path": dest_path,
                 "render_progress": 100,
@@ -540,7 +560,7 @@ async def process_video(
         dest_path = f"ai_generated/{item_id}.mp4"
         item.status = ContentStatus.rendering
         item.production_meta = {
-            **meta,
+            **_meta_without_render_error(meta),
             "mode": "new_script",
             "render_progress": 5,
             "render_stage": "na fila",
@@ -558,7 +578,7 @@ async def process_video(
     if mode == "editing_plan":
         item.status = ContentStatus.rendering
         item.production_meta = {
-            **meta,
+            **_meta_without_render_error(meta),
             "mode": "editing_plan",
             "render_progress": 5,
             "render_stage": "na fila",

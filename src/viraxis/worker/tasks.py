@@ -131,54 +131,27 @@ def run_scout_task(
 
 
 # ── RENDERER ───────────────────────────────────────────────────────────────────
-
-@shared_task(
-    name="viraxis.worker.tasks.run_renderer_task",
-    bind=True,
-    **_AI_TASK_RETRY,
-)
-def run_renderer_task(
-    self,
-    office_id: str,
-    user_id: str,
-    decision_id: str,
-    temperature: float | None = None,
-) -> dict:
-    """Executa o agente RENDERER para gerar roteiro a partir de uma decisão.
-
-    Args:
-        office_id: UUID do escritório (str).
-        user_id: UUID do usuário (str).
-        decision_id: UUID da ContentDecision gerada pelo BRAIN (str).
-        temperature: Criatividade. Padrão 0.8.
-
-    Returns:
-        dict com content_item_id, title e duration_seconds.
-    """
-    from viraxis.agents.renderer.runner import run_renderer  # import lazy
-
-    logger.info(
-        "RENDERER task iniciando | celery_id=%s | office=%s | decision=%s",
-        self.request.id, office_id, decision_id,
-    )
-
-    content_item = asyncio.run(
-        run_renderer(
-            UUID(office_id),
-            UUID(user_id),
-            UUID(decision_id),
-            temperature=temperature,
-        )
-    )
-
-    result = {
-        "content_item_id": str(content_item.id),
-        "title": content_item.title,
-        "duration_seconds": content_item.duration_seconds,
-        "status": content_item.status.value,
-    }
-    logger.info("RENDERER task concluida | %s", result)
-    return result
+#
+# Removida em 2026-08-06 (KEVIN, P2 "fonte: planejador"): `run_renderer_task`
+# chamava `viraxis.agents.renderer.runner.run_renderer()`, que era o fluxo
+# RENDERER antigo baseado em CrewAI (`agent.py`/`tasks.py` do pacote
+# `renderer`) — substituído em produção por `run_renderer_v2`
+# (`agents/renderer/v2_direct.py`, LiteLLM direto), chamado hoje só via
+# `BackgroundTasks` do FastAPI (`offices.py::_run_renderer_safe`,
+# `main.py::_startup_recovery`). Confirmado por grep que nenhum router ou
+# background task chamava esta task Celery (`.delay()`/`apply_async()` não
+# aparecem em `api/`), e que `run_renderer()`/`create_renderer_agent()`/
+# `create_render_task()`/`create_editing_plan_task()` não tinham nenhum outro
+# chamador no repo — removidos junto (`runner.py`, `agent.py`, `tasks.py` do
+# pacote `renderer` deletados). `renderer/schemas.py` foi mantido: suas
+# classes (`RendererOutput`, `EditingPlanOutput`) continuam com cobertura de
+# teste direta em `tests/test_pipeline.py` como contrato de schema, independente
+# da orquestração CrewAI removida. Escopo desta remoção ficou restrito à task
+# RENDERER — `run_brain_task`/`run_scout_task`/`run_publisher_task` abaixo E a
+# infraestrutura Celery/Redis como um todo (`celery_app.py`, serviços
+# `worker`/`beat` do `docker-compose.yml`) não foram tocados: essa é uma
+# decisão de arquitetura maior, já registrada como pendente do Marcos na
+# auditoria do repo (BACKLOG, seção Governança/DEV1).
 
 
 # ── PUBLISHER ─────────────────────────────────────────────────────────────────

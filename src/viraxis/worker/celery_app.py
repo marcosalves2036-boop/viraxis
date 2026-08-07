@@ -41,7 +41,6 @@ celery_app.conf.update(
     task_routes={
         "viraxis.worker.tasks.run_brain_task": {"queue": "viraxis"},
         "viraxis.worker.tasks.run_scout_task": {"queue": "viraxis"},
-        "viraxis.worker.tasks.run_renderer_task": {"queue": "viraxis"},
         "viraxis.worker.tasks.run_publisher_task": {"queue": "viraxis"},
         "viraxis.worker.tasks.cleanup_agent_logs_task": {"queue": "viraxis-beat"},
     },

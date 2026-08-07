@@ -561,19 +561,23 @@ class TestSocialAccountsUuidValidation:
 
 # ─── Parte 4 — oauth.py (4 fluxos: google, tiktok, instagram, meta) ──────────
 #
-# Nuance encontrada durante a auditoria (reportada no resumo final do QA):
-# `google_callback` NÃO tem try/except ao redor do trecho que usa
-# `parse_uuid` — uma HTTPException(422) ali propaga direto e vira a resposta
-# HTTP real (422). Já `tiktok_callback`, `instagram_callback` e
-# `meta_callback` envolvem esse mesmo trecho num `except Exception` amplo
-# que converte QUALQUER exceção (incluindo a HTTPException 422 do
-# parse_uuid) num redirect "status=error" para o frontend — nunca um 500,
-# mas também nunca um 422 real. Os testes abaixo validam o comportamento
-# de cada fluxo tal como ele realmente é.
+# Correção aplicada em 2026-08-06 (KEVIN, P2 "fonte: qa"): a auditoria
+# original encontrou uma inconsistência — `google_callback` NÃO tinha
+# try/except ao redor do trecho que usa `parse_uuid`, então uma
+# HTTPException(422) ali propagava direto como resposta HTTP real (422),
+# enquanto `tiktok_callback`, `instagram_callback` e `meta_callback` já
+# envolviam esse mesmo trecho num `except Exception` amplo que converte
+# QUALQUER exceção (incluindo o 422 do parse_uuid) num redirect
+# "status=error" para o frontend. Decisão registrada na docstring do módulo
+# `oauth.py`: os 4 fluxos agora sempre redirecionam com "status=error" (nunca
+# 500, nunca um 422/4xx bruto) — mais amigável para um endpoint cujo cliente
+# real é o browser do usuário no meio de um redirect OAuth externo, não uma
+# chamada de API tratada programaticamente pelo frontend. Os testes abaixo
+# validam esse comportamento agora uniforme nos 4 fluxos.
 
 
 class TestOauthCallbacksUuidValidation:
-    def test_google_callback_malformed_sub_in_state_returns_422(
+    def test_google_callback_malformed_sub_does_not_return_500(
         self, client_factory, mock_oauth_http
     ):
         mock_oauth_http["post"][GOOGLE_TOKEN_URL] = httpx.Response(
@@ -589,8 +593,13 @@ class TestOauthCallbacksUuidValidation:
             params={"code": "abc", "state": state},
             follow_redirects=False,
         )
-        assert resp.status_code == 422
+        # google_callback agora segue o mesmo padrão dos outros 3 fluxos:
+        # UUID malformado no state vira redirect "status=error", nunca um
+        # 422 bruto nem um 500.
+        assert resp.status_code in (302, 307)
         assert resp.status_code != 500
+        assert resp.status_code != 422
+        assert "status=error" in resp.headers["location"]
 
     def test_google_callback_valid_ids_redirects_success_not_500(
         self, client_factory, mock_oauth_http, monkeypatch

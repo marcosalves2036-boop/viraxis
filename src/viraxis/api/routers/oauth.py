@@ -5,6 +5,23 @@ Fluxo:
   2. Backend  → redireciona para plataforma com state assinado
   3. Plataforma → GET /auth/{platform}/callback?code=...&state=...
   4. Backend  → troca code por tokens, salva SocialAccount, redireciona frontend
+
+Decisão de forma de erro (2026-08-06, KEVIN, P2 do BACKLOG "fonte: qa"):
+os 4 fluxos de callback (`google_callback`, `tiktok_callback`,
+`instagram_callback`, `meta_callback`) padronizados para **sempre redirecionar
+com `status=error`** em vez de deixar propagar HTTPException real (ex.: 422 de
+UUID malformado no `state`). Motivo: quem chama `GET /auth/{platform}/callback`
+é o *browser do usuário*, redirecionado pela plataforma externa — não é uma
+chamada de API que o frontend trata programaticamente. Um 422/500 bruto aqui
+renderiza JSON cru na tela do usuário no meio do fluxo OAuth; o redirect
+sempre devolve o usuário para uma tela do app que sabe exibir o erro. Antes
+desta mudança, `google_callback` era a exceção (sem `try/except` ao redor do
+`_parse_uuid`, então UUID malformado no state virava 422 real) enquanto os
+outros 3 já convertiam em redirect — comportamento agora uniforme.
+`_verify_state()` continua fora do bloco protegido nos 4 fluxos: um state JWT
+inválido/expirado é erro de protocolo anterior a qualquer troca de token, e
+`HTTPException(400)` ali é intencional e consistente entre os 4 (nunca
+capturada pelo `except Exception` que vem depois).
 """
 
 import base64
@@ -133,77 +150,95 @@ async def google_callback(
     user_id = state_data["sub"]
     office_id = state_data.get("office_id")
 
-    async with httpx.AsyncClient(timeout=15) as client:
-        token_resp = await client.post(GOOGLE_TOKEN_URL, data={
-            "code": code,
-            "client_id": settings.google_oauth_client_id,
-            "client_secret": settings.google_oauth_client_secret,
-            "redirect_uri": settings.google_oauth_redirect_uri,
-            "grant_type": "authorization_code",
-        })
-        if token_resp.status_code != 200:
-            logger.error("Google token exchange failed: %s", token_resp.text)
-            return _frontend_redirect("error", "google", "token_exchange_failed", office_id)
+    # NOTE (padronização 2026-08-06, ver ADR na docstring do módulo/BACKLOG):
+    # os 4 callbacks OAuth (google/tiktok/instagram/meta) envolvem tudo após
+    # a validação do state num `except Exception` amplo que converte QUALQUER
+    # falha — incluindo HTTPException(422) do `_parse_uuid` — num redirect
+    # `status=error` para o frontend, nunca um 500 nem um 422 bruto. Motivo:
+    # estes endpoints são o alvo de um redirect de navegador vindo da
+    # plataforma externa (Google/TikTok/Meta) — o cliente aqui é o browser do
+    # usuário no meio do fluxo, não uma chamada de API tratada
+    # programaticamente pelo frontend. Um 422 bruto renderizaria um JSON cru
+    # na tela do usuário em vez de devolvê-lo ao app; o redirect com
+    # `status=error` sempre aterrissa numa tela que o frontend sabe exibir.
+    # `google_callback` era a exceção (só tinha o 422 real de `_parse_uuid`
+    # propagando) — corrigido aqui para se comportar igual aos outros 3.
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            token_resp = await client.post(GOOGLE_TOKEN_URL, data={
+                "code": code,
+                "client_id": settings.google_oauth_client_id,
+                "client_secret": settings.google_oauth_client_secret,
+                "redirect_uri": settings.google_oauth_redirect_uri,
+                "grant_type": "authorization_code",
+            })
+            if token_resp.status_code != 200:
+                logger.error("Google token exchange failed: %s", token_resp.text)
+                return _frontend_redirect("error", "google", "token_exchange_failed", office_id)
 
-        tokens = token_resp.json()
-        access_token = tokens["access_token"]
+            tokens = token_resp.json()
+            access_token = tokens["access_token"]
 
-        # Buscar info do canal YouTube
-        channel_resp = await client.get(
-            GOOGLE_CHANNEL_URL,
-            params={"part": "snippet", "mine": "true"},
-            headers={"Authorization": f"Bearer {access_token}"},
-        )
-        channel_data = channel_resp.json()
-        channels = channel_data.get("items", [])
-
-        if channels:
-            channel = channels[0]
-            platform_user_id = channel["id"]
-            platform_username = channel["snippet"]["title"]
-        else:
-            # Fallback: info do perfil Google
-            userinfo_resp = await client.get(
-                GOOGLE_USERINFO_URL,
+            # Buscar info do canal YouTube
+            channel_resp = await client.get(
+                GOOGLE_CHANNEL_URL,
+                params={"part": "snippet", "mine": "true"},
                 headers={"Authorization": f"Bearer {access_token}"},
             )
-            info = userinfo_resp.json()
-            platform_user_id = info.get("id", "")
-            platform_username = info.get("name", info.get("email", "youtube_user"))
+            channel_data = channel_resp.json()
+            channels = channel_data.get("items", [])
 
-    access_enc = _encrypt_token(access_token)
-    refresh_enc = _encrypt_token(tokens["refresh_token"]) if tokens.get("refresh_token") else None
-    expires_at = datetime.now(timezone.utc) + timedelta(seconds=tokens.get("expires_in", 3600))
+            if channels:
+                channel = channels[0]
+                platform_user_id = channel["id"]
+                platform_username = channel["snippet"]["title"]
+            else:
+                # Fallback: info do perfil Google
+                userinfo_resp = await client.get(
+                    GOOGLE_USERINFO_URL,
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+                info = userinfo_resp.json()
+                platform_user_id = info.get("id", "")
+                platform_username = info.get("name", info.get("email", "youtube_user"))
 
-    repo = SocialAccountRepository(session)
-    existing = await repo.get_by_user_platform_username(
-        _parse_uuid(user_id, "user_id"), SocialPlatform.youtube, platform_username
-    )
-    if existing:
-        existing.access_token_enc = access_enc
-        existing.refresh_token_enc = refresh_enc
-        existing.token_expires_at = expires_at
-        existing.is_active = True
-        if office_id:
-            existing.office_id = _parse_uuid(office_id, "office_id")
-        await repo.save(existing)
-    else:
-        account = SocialAccount(
-            user_id=_parse_uuid(user_id, "user_id"),
-            office_id=_parse_uuid(office_id, "office_id") if office_id else None,
-            platform=SocialPlatform.youtube,
-            platform_username=platform_username,
-            platform_user_id=platform_user_id,
-            access_token_enc=access_enc,
-            refresh_token_enc=refresh_enc,
-            token_expires_at=expires_at,
-            is_active=True,
+        access_enc = _encrypt_token(access_token)
+        refresh_enc = _encrypt_token(tokens["refresh_token"]) if tokens.get("refresh_token") else None
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=tokens.get("expires_in", 3600))
+
+        repo = SocialAccountRepository(session)
+        existing = await repo.get_by_user_platform_username(
+            _parse_uuid(user_id, "user_id"), SocialPlatform.youtube, platform_username
         )
-        session.add(account)
+        if existing:
+            existing.access_token_enc = access_enc
+            existing.refresh_token_enc = refresh_enc
+            existing.token_expires_at = expires_at
+            existing.is_active = True
+            if office_id:
+                existing.office_id = _parse_uuid(office_id, "office_id")
+            await repo.save(existing)
+        else:
+            account = SocialAccount(
+                user_id=_parse_uuid(user_id, "user_id"),
+                office_id=_parse_uuid(office_id, "office_id") if office_id else None,
+                platform=SocialPlatform.youtube,
+                platform_username=platform_username,
+                platform_user_id=platform_user_id,
+                access_token_enc=access_enc,
+                refresh_token_enc=refresh_enc,
+                token_expires_at=expires_at,
+                is_active=True,
+            )
+            session.add(account)
 
-    await session.commit()
-    logger.info("YouTube conectado: user=%s channel=%s", user_id, platform_username)
-    return _frontend_redirect("success", "youtube", office_id=office_id)
+        await session.commit()
+        logger.info("YouTube conectado: user=%s channel=%s", user_id, platform_username)
+        return _frontend_redirect("success", "youtube", office_id=office_id)
+
+    except Exception as exc:
+        logger.exception("Google callback exception: %s", exc)
+        return _frontend_redirect("error", "google", "internal_error", office_id)
 
 
 # ─── TikTok ───────────────────────────────────────────────────────────────────

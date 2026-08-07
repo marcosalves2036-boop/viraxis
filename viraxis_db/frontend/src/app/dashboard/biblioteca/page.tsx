@@ -5,61 +5,22 @@ import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { offices as officesApi } from "@/lib/api";
 import RetryAnalysisButton, { errorTypeLabel } from "@/components/biblioteca/RetryAnalysisButton";
+import VideoCard from "@/components/biblioteca/VideoCard";
+import EmptyState from "@/components/biblioteca/EmptyState";
+import {
+  RawVideo,
+  STATUS_LABEL,
+  STATUS_CLASS,
+  highlightsCount,
+  analysisErrorMessage,
+  fmtDuration,
+} from "@/components/biblioteca/types";
 
 interface Office { id: string; name: string; }
-
-interface AiAnalysis {
-  overall_summary?: string;
-  detected_topics?: string[];
-  predominant_tone?: string;
-  transcription_text?: string;
-  scenes?: Array<{ start: number; end: number; description: string }>;
-  editorial_highlights?: Array<{ start: number; end: number; reason: string }>;
-  status?: string;
-  error?: string;
-}
-
-interface RawVideo {
-  id: string; office_id: string; title: string | null;
-  original_filename: string; status: string;
-  duration_seconds: number | null; tags: string[];
-  description: string | null; r2_url: string | null;
-  ai_analysis: AiAnalysis | null;
-  // download_failed | timeout | analysis_failed | null — diferencia o motivo
-  // da falha de análise para a mensagem exibida ao usuário (RetryAnalysisButton).
-  error_type: string | null;
-  created_at: string;
-}
 
 interface GeneratedItem {
   id: string; title: string; status: string; created_at: string;
   production_meta?: { raw_video?: { id?: string }; raw_video_id?: string; video_url?: string };
-}
-
-// Indicador automático de progresso — o usuário nunca precisa clicar em
-// "Analisar" manualmente: pending (enviando/aguardando) → processing
-// (analisando com IA) → ready (analisado) ou failed (erro na análise).
-const STATUS_LABEL: Record<string, string> = {
-  pending: "Enviando...", ready: "Analisado", processing: "Analisando...", failed: "Erro na análise",
-};
-const STATUS_CLASS: Record<string, string> = {
-  pending:    "bg-white/10 text-white/50 border-white/10",
-  ready:      "bg-green-500/10 text-green-400 border-green-500/20",
-  processing: "bg-violet-500/10 text-violet-400 border-violet-500/20",
-  failed:     "bg-red-500/10 text-red-400 border-red-500/20",
-};
-
-function highlightsCount(v: RawVideo): number {
-  return v.ai_analysis?.editorial_highlights?.length ?? 0;
-}
-
-function analysisErrorMessage(v: RawVideo): string | null {
-  return v.ai_analysis?.error ?? null;
-}
-
-function fmtDuration(s: number | null) {
-  if (!s) return "—";
-  return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 }
 
 // ── Modal de detalhe do vídeo ─────────────────────────────────────────────────
@@ -639,117 +600,21 @@ function BibliotecaContent() {
       {loading && videos.length === 0 ? (
         <div className="text-white/40 text-sm py-8 text-center">Carregando...</div>
       ) : videos.length === 0 ? (
-        <div className="card-glass rounded-2xl p-12 text-center space-y-4">
-          <div className="text-6xl">🎬</div>
-          <div className="space-y-1.5">
-            <p className="text-white/70 text-lg font-semibold">Sua biblioteca está vazia</p>
-            <p className="text-white/35 text-sm max-w-sm mx-auto">
-              Envie vídeos brutos para que a IA analise cenas, transcrição e destaques
-              automaticamente — sem precisar clicar em nada depois do upload.
-            </p>
-          </div>
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            disabled={uploading || !selectedOfficeId}
-            className="inline-flex items-center gap-2 px-5 py-3 bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl text-sm font-semibold transition-colors"
-          >
-            <span className="text-base">▲</span> Enviar primeiro vídeo
-          </button>
-          {!selectedOfficeId && (
-            <p className="text-white/25 text-xs">Selecione um escritório acima para habilitar o upload.</p>
-          )}
-        </div>
+        <EmptyState
+          onUploadClick={() => fileInputRef.current?.click()}
+          uploading={uploading}
+          hasOffice={!!selectedOfficeId}
+        />
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
           {videos.map(v => (
-            // Div, não <button> — o card precisa hospedar o botão "Tentar
-            // novamente" quando status=failed, e <button> dentro de <button>
-            // é HTML inválido. role/tabIndex/onKeyDown preservam a acessibilidade.
-            <div
+            <VideoCard
               key={v.id}
-              role="button"
-              tabIndex={0}
-              onClick={() => setSelectedVideo(v)}
-              onKeyDown={e => {
-                if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSelectedVideo(v); }
-              }}
-              className="card-glass rounded-2xl overflow-hidden text-left group hover:border-violet-500/30 border border-white/[0.06] transition-all cursor-pointer"
-            >
-              {/* Thumbnail 16:9 */}
-              <div className="relative aspect-video bg-black flex items-center justify-center">
-                {thumbnails[v.id] ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={thumbnails[v.id]} alt={v.title || v.original_filename} className="w-full h-full object-cover" />
-                ) : (
-                  <span className="text-3xl opacity-30">🎬</span>
-                )}
-                {/* Overlays de status — badge/spinner automático, sem botão manual */}
-                {v.status === "pending" && (
-                  <div className="absolute inset-0 bg-black/55 flex flex-col items-center justify-center gap-1.5">
-                    <span className="animate-pulse text-lg">📤</span>
-                    <span className="text-white/70 text-[11px] font-semibold">Enviando...</span>
-                  </div>
-                )}
-                {v.status === "processing" && (
-                  <div className="absolute inset-0 bg-black/55 flex flex-col items-center justify-center gap-1.5">
-                    <span className="animate-spin text-lg">⚙️</span>
-                    <span className="text-violet-300 text-[11px] font-semibold">Analisando...</span>
-                  </div>
-                )}
-                {v.status === "ready" && (
-                  <span className="absolute top-1.5 right-1.5 text-xs bg-black/60 rounded-full px-1.5 py-0.5">✅</span>
-                )}
-                {v.status === "failed" && (
-                  <span
-                    className="absolute top-1.5 right-1.5 text-xs bg-black/60 rounded-full px-1.5 py-0.5"
-                    title={analysisErrorMessage(v) || errorTypeLabel(v.error_type)}
-                  >
-                    ❌
-                  </span>
-                )}
-                {/* Duração */}
-                <span className="absolute bottom-1.5 left-1.5 text-[11px] font-semibold text-white bg-black/70 rounded px-1.5 py-0.5">
-                  ▶ {fmtDuration(v.duration_seconds)}
-                </span>
-              </div>
-              {/* Título */}
-              <div className="p-2.5">
-                <p className="text-white/80 text-xs font-medium truncate group-hover:text-white transition-colors">
-                  {v.title || v.original_filename}
-                </p>
-                {/* Chips: status, duração e destaques detectados */}
-                <div className="flex flex-wrap items-center gap-1 mt-1.5">
-                  <span className={`inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded-full border ${STATUS_CLASS[v.status] || STATUS_CLASS.pending}`}>
-                    {STATUS_LABEL[v.status] || v.status}
-                  </span>
-                  <span className="inline-flex items-center gap-0.5 text-[10px] text-white/40 bg-white/[0.05] rounded-full px-1.5 py-0.5">
-                    ⏱ {fmtDuration(v.duration_seconds)}
-                  </span>
-                  {v.status === "ready" && (
-                    <span className="inline-flex items-center gap-0.5 text-[10px] text-violet-300/80 bg-violet-500/[0.08] rounded-full px-1.5 py-0.5">
-                      ✨ {highlightsCount(v)} {highlightsCount(v) === 1 ? "destaque" : "destaques"}
-                    </span>
-                  )}
-                </div>
-                <p className="text-white/25 text-[10px] mt-1">
-                  {new Date(v.created_at).toLocaleDateString("pt-BR")}
-                </p>
-                {/* Retry inline no card — evita ter que abrir o modal só para
-                    tentar de novo. stopPropagation dentro do componente
-                    impede que o clique também abra o modal de detalhe. */}
-                {v.status === "failed" && (
-                  <div className="mt-2">
-                    <RetryAnalysisButton
-                      videoId={v.id}
-                      errorType={v.error_type as "download_failed" | "timeout" | "analysis_failed" | null}
-                      variant="card"
-                      showReason={false}
-                      onSuccess={patch => handleReanalyzeSuccess(v.id, patch)}
-                    />
-                  </div>
-                )}
-              </div>
-            </div>
+              video={v}
+              thumbnail={thumbnails[v.id]}
+              onSelect={setSelectedVideo}
+              onReanalyzeSuccess={handleReanalyzeSuccess}
+            />
           ))}
 
           {/* Card "+" para upload */}

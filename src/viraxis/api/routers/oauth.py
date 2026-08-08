@@ -100,6 +100,114 @@ def _frontend_redirect(status: str, platform: str, message: str = "", office_id:
     return RedirectResponse(url=f"{settings.frontend_url}/oauth/callback?{urlencode(params)}")
 
 
+async def _upsert_social_account(
+    *,
+    session: AsyncSession | None,
+    user_id: str,
+    office_id: str | None,
+    platform: SocialPlatform,
+    platform_username: str,
+    platform_user_id: str,
+    access_token: str,
+    refresh_token: str | None,
+    expires_at: datetime,
+    update_platform_user_id_on_existing: bool = False,
+    update_refresh_token_on_existing: bool = True,
+    retry_cold_start: bool = False,
+) -> None:
+    """Upsert de `SocialAccount` — busca uma conta existente por
+    (user_id, platform, platform_username); atualiza tokens/expiração se
+    achar, cria um registro novo se não. Criptografa access/refresh token
+    com Fernet antes de persistir. Extraído em 2026-08-07 (DAVI, P1 do
+    BACKLOG "dívida técnica promovida") dos 4 fluxos de callback OAuth
+    (google/tiktok/instagram/meta), que duplicavam ~150 linhas cada deste
+    trecho.
+
+    Dois eixos de variação entre plataformas, preservados via parâmetros
+    (nenhum mudou de comportamento observável nesta extração):
+
+    1. **Sessão / retry de cold-start (assimetria pré-existente, mantida
+       conscientemente):** Google troca o token ANTES de qualquer I/O de
+       banco mas reaproveita a sessão de `Depends(get_session)` do FastAPI
+       e nunca teve retry — `session` é fornecida e `retry_cold_start=False`
+       faz um único `commit` nela. TikTok/Instagram/Meta abrem sessões
+       próprias via `AsyncSessionLocal()` dentro de um retry loop (4
+       tentativas, backoff 1/2/4/8s) porque a troca de token com a
+       plataforma externa pode levar segundos e o pool do Neon pode ainda
+       estar frio quando a escrita acontece — `session=None` e
+       `retry_cold_start=True` ativam esse caminho. Não generalizamos o
+       retry para o Google nesta task: seria uma mudança de comportamento
+       não solicitada: a extração deve preservar a assimetria, não removê-la.
+    2. **Campos atualizados na conta existente:** todas as plataformas
+       atualizam `access_token_enc`/`token_expires_at`/`is_active`/`office_id`
+       (se informado). Só Instagram também atualiza `platform_user_id` no
+       registro existente (`update_platform_user_id_on_existing=True`) — o
+       id da IG Business Account pode mudar mesmo com o mesmo @username, se
+       o usuário trocar de Page vinculada. Google e TikTok sempre
+       sobrescrevem `refresh_token_enc` no update (mesmo com `None`, se a
+       plataforma não devolveu um refresh token novo na rodada — mantido
+       tal como estava, não é bug introduzido aqui); Instagram e Meta nunca
+       tocam `refresh_token_enc` no update (`update_refresh_token_on_existing
+       =False`), porque essas duas plataformas não usam refresh token neste
+       fluxo (token de longa duração via `fb_exchange_token`) e o valor
+       sempre foi `None` desde a criação.
+    """
+    access_enc = _encrypt_token(access_token)
+    refresh_enc = _encrypt_token(refresh_token) if refresh_token else None
+    user_uuid = _parse_uuid(user_id, "user_id")
+    office_uuid = _parse_uuid(office_id, "office_id") if office_id else None
+
+    async def _do_upsert(db_sess: AsyncSession) -> None:
+        repo = SocialAccountRepository(db_sess)
+        existing = await repo.get_by_user_platform_username(user_uuid, platform, platform_username)
+        if existing:
+            existing.access_token_enc = access_enc
+            existing.token_expires_at = expires_at
+            existing.is_active = True
+            if update_refresh_token_on_existing:
+                existing.refresh_token_enc = refresh_enc
+            if update_platform_user_id_on_existing:
+                existing.platform_user_id = platform_user_id
+            if office_uuid:
+                existing.office_id = office_uuid
+            await repo.save(existing)
+        else:
+            account = SocialAccount(
+                user_id=user_uuid,
+                office_id=office_uuid,
+                platform=platform,
+                platform_username=platform_username,
+                platform_user_id=platform_user_id,
+                access_token_enc=access_enc,
+                refresh_token_enc=refresh_enc,
+                token_expires_at=expires_at,
+                is_active=True,
+            )
+            db_sess.add(account)
+        await db_sess.commit()
+
+    if not retry_cold_start:
+        if session is None:
+            raise ValueError("_upsert_social_account: session é obrigatória quando retry_cold_start=False")
+        await _do_upsert(session)
+        return
+
+    for _attempt in range(4):  # até 4 tentativas com backoff
+        try:
+            async with AsyncSessionLocal() as db_sess:
+                await _do_upsert(db_sess)
+            break
+        except (ConnectionRefusedError, OSError) as _ce:
+            wait = 2 ** _attempt  # 1, 2, 4, 8 segundos
+            logger.warning(
+                "%s Neon cold-start attempt %d/4: %s — aguardando %ds",
+                platform.value, _attempt + 1, _ce, wait,
+            )
+            if _attempt >= 3:
+                raise
+            await asyncio.sleep(wait)
+
+
 # ─── Google / YouTube ─────────────────────────────────────────────────────────
 
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -202,37 +310,20 @@ async def google_callback(
                 platform_user_id = info.get("id", "")
                 platform_username = info.get("name", info.get("email", "youtube_user"))
 
-        access_enc = _encrypt_token(access_token)
-        refresh_enc = _encrypt_token(tokens["refresh_token"]) if tokens.get("refresh_token") else None
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=tokens.get("expires_in", 3600))
-
-        repo = SocialAccountRepository(session)
-        existing = await repo.get_by_user_platform_username(
-            _parse_uuid(user_id, "user_id"), SocialPlatform.youtube, platform_username
+        await _upsert_social_account(
+            session=session,
+            user_id=user_id,
+            office_id=office_id,
+            platform=SocialPlatform.youtube,
+            platform_username=platform_username,
+            platform_user_id=platform_user_id,
+            access_token=access_token,
+            refresh_token=tokens.get("refresh_token"),
+            expires_at=expires_at,
+            update_refresh_token_on_existing=True,
+            retry_cold_start=False,
         )
-        if existing:
-            existing.access_token_enc = access_enc
-            existing.refresh_token_enc = refresh_enc
-            existing.token_expires_at = expires_at
-            existing.is_active = True
-            if office_id:
-                existing.office_id = _parse_uuid(office_id, "office_id")
-            await repo.save(existing)
-        else:
-            account = SocialAccount(
-                user_id=_parse_uuid(user_id, "user_id"),
-                office_id=_parse_uuid(office_id, "office_id") if office_id else None,
-                platform=SocialPlatform.youtube,
-                platform_username=platform_username,
-                platform_user_id=platform_user_id,
-                access_token_enc=access_enc,
-                refresh_token_enc=refresh_enc,
-                token_expires_at=expires_at,
-                is_active=True,
-            )
-            session.add(account)
-
-        await session.commit()
         logger.info("YouTube conectado: user=%s channel=%s", user_id, platform_username)
         return _frontend_redirect("success", "youtube", office_id=office_id)
 
@@ -372,51 +463,22 @@ async def tiktok_callback(
             logger.info("TikTok user info status=%s body=%s", user_resp.status_code, user_resp.text[:300])
             user_data = user_resp.json().get("data", {}).get("user", {})
             display_name = user_data.get("display_name", open_id or "tiktok_user")
-        # ── DB save — retry loop para Neon cold-start ───────────────────────
-        access_enc = _encrypt_token(access_token)
-        refresh_token_val = token_data.get("refresh_token", "")
-        refresh_enc = _encrypt_token(refresh_token_val) if refresh_token_val else None
+        # ── DB save — retry de cold-start via _upsert_social_account ────────
         expires_in = token_data.get("expires_in", 86400)
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
-        for _attempt in range(4):  # até 4 tentativas com backoff
-            try:
-                async with AsyncSessionLocal() as db_sess:
-                    repo = SocialAccountRepository(db_sess)
-                    existing = await repo.get_by_user_platform_username(
-                        _parse_uuid(user_id, "user_id"), SocialPlatform.tiktok, display_name
-                    )
-                    if existing:
-                        existing.access_token_enc = access_enc
-                        existing.refresh_token_enc = refresh_enc
-                        existing.token_expires_at = expires_at
-                        existing.is_active = True
-                        if office_id:
-                            existing.office_id = _parse_uuid(office_id, "office_id")
-                        await repo.save(existing)
-                    else:
-                        account = SocialAccount(
-                            user_id=_parse_uuid(user_id, "user_id"),
-                            office_id=_parse_uuid(office_id, "office_id") if office_id else None,
-                            platform=SocialPlatform.tiktok,
-                            platform_username=display_name,
-                            platform_user_id=open_id,
-                            access_token_enc=access_enc,
-                            refresh_token_enc=refresh_enc,
-                            token_expires_at=expires_at,
-                            is_active=True,
-                        )
-                        db_sess.add(account)
-                    await db_sess.commit()
-                    break
-            except (ConnectionRefusedError, OSError) as _ce:
-                wait = 2 ** _attempt  # 1, 2, 4, 8 segundos
-                logger.warning(
-                    "Neon cold-start attempt %d/4: %s — aguardando %ds",
-                    _attempt + 1, _ce, wait,
-                )
-                if _attempt >= 3:
-                    raise
-                await asyncio.sleep(wait)
+        await _upsert_social_account(
+            session=None,
+            user_id=user_id,
+            office_id=office_id,
+            platform=SocialPlatform.tiktok,
+            platform_username=display_name,
+            platform_user_id=open_id,
+            access_token=access_token,
+            refresh_token=token_data.get("refresh_token") or None,
+            expires_at=expires_at,
+            update_refresh_token_on_existing=True,
+            retry_cold_start=True,
+        )
 
         logger.info("TikTok conectado: user=%s open_id=%s", user_id, open_id)
         return _frontend_redirect("success", "tiktok", office_id=office_id)
@@ -630,48 +692,21 @@ async def instagram_callback(
                 )
 
         # ---- 6. Persistir SocialAccount (com retry para Neon cold-start) ----
-        access_enc = _encrypt_token(page_access_token)
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
-
-        for _attempt in range(4):
-            try:
-                async with AsyncSessionLocal() as db_sess:
-                    repo = SocialAccountRepository(db_sess)
-                    existing = await repo.get_by_user_platform_username(
-                        _parse_uuid(user_id, "user_id"), SocialPlatform.instagram, ig_username
-                    )
-                    if existing:
-                        existing.access_token_enc = access_enc
-                        existing.platform_user_id = ig_account_id
-                        existing.token_expires_at = expires_at
-                        existing.is_active = True
-                        if office_id:
-                            existing.office_id = _parse_uuid(office_id, "office_id")
-                        await repo.save(existing)
-                    else:
-                        account = SocialAccount(
-                            user_id=_parse_uuid(user_id, "user_id"),
-                            office_id=_parse_uuid(office_id, "office_id") if office_id else None,
-                            platform=SocialPlatform.instagram,
-                            platform_username=ig_username,
-                            platform_user_id=ig_account_id,
-                            access_token_enc=access_enc,
-                            refresh_token_enc=None,
-                            token_expires_at=expires_at,
-                            is_active=True,
-                        )
-                        db_sess.add(account)
-                    await db_sess.commit()
-                break
-            except (ConnectionRefusedError, OSError) as _ce:
-                wait = 2 ** _attempt
-                logger.warning(
-                    "Instagram Neon cold-start attempt %d/4: %s — aguardando %ds",
-                    _attempt + 1, _ce, wait,
-                )
-                if _attempt >= 3:
-                    raise
-                await asyncio.sleep(wait)
+        await _upsert_social_account(
+            session=None,
+            user_id=user_id,
+            office_id=office_id,
+            platform=SocialPlatform.instagram,
+            platform_username=ig_username,
+            platform_user_id=ig_account_id,
+            access_token=page_access_token,
+            refresh_token=None,
+            expires_at=expires_at,
+            update_platform_user_id_on_existing=True,
+            update_refresh_token_on_existing=False,
+            retry_cold_start=True,
+        )
 
         logger.info(
             "Instagram conectado: user=%s ig_account=%s username=%s page=%s",
@@ -757,45 +792,21 @@ async def meta_callback(
             fb_user_id = me.get("id", "")
             fb_name = me.get("name", "facebook_user")
 
-        access_enc = _encrypt_token(access_token)
         expires_in = tokens.get("expires_in", 5183944)
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
-
-        for _attempt in range(4):
-            try:
-                async with AsyncSessionLocal() as db_sess:
-                    repo = SocialAccountRepository(db_sess)
-                    existing = await repo.get_by_user_platform_username(
-                        _parse_uuid(user_id, "user_id"), SocialPlatform.facebook, fb_name
-                    )
-                    if existing:
-                        existing.access_token_enc = access_enc
-                        existing.token_expires_at = expires_at
-                        existing.is_active = True
-                        if office_id:
-                            existing.office_id = _parse_uuid(office_id, "office_id")
-                        await repo.save(existing)
-                    else:
-                        account = SocialAccount(
-                            user_id=_parse_uuid(user_id, "user_id"),
-                            office_id=_parse_uuid(office_id, "office_id") if office_id else None,
-                            platform=SocialPlatform.facebook,
-                            platform_username=fb_name,
-                            platform_user_id=fb_user_id,
-                            access_token_enc=access_enc,
-                            refresh_token_enc=None,
-                            token_expires_at=expires_at,
-                            is_active=True,
-                        )
-                        db_sess.add(account)
-                    await db_sess.commit()
-                break
-            except (ConnectionRefusedError, OSError) as _ce:
-                wait = 2 ** _attempt
-                logger.warning("Meta Neon cold-start attempt %d/4: %s — retrying in %ds", _attempt + 1, _ce, wait)
-                if _attempt >= 3:
-                    raise
-                await asyncio.sleep(wait)
+        await _upsert_social_account(
+            session=None,
+            user_id=user_id,
+            office_id=office_id,
+            platform=SocialPlatform.facebook,
+            platform_username=fb_name,
+            platform_user_id=fb_user_id,
+            access_token=access_token,
+            refresh_token=None,
+            expires_at=expires_at,
+            update_refresh_token_on_existing=False,
+            retry_cold_start=True,
+        )
 
         logger.info("Meta conectado: user=%s fb_id=%s", user_id, fb_user_id)
         return _frontend_redirect("success", "facebook", office_id=office_id)
